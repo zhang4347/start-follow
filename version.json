@@ -1,6 +1,6 @@
 {
-  "version": "1.0.3",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.0.3/StarFollow_1.0.3.zip",
-  "sha256": "daca39bda3d7a217e8fe6d8a3bdf319056b996ce86b9ba99a2f3d8cab3a21c76",
-  "notes": "自動更新測試版：啟動會多印一行 1.0.3 標記"
+  "version": "1.0.5",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.0.5/StarFollow_1.0.5.zip",
+  "sha256": "859cd13f73833d95f761edca628aa6b8aaacfdd73d36724a8d6ef465b7ddf131",
+  "notes": "驗證自動更新換檔（含 log）；換檔強化、防無限重開"
 }
