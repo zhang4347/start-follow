@@ -207,7 +207,9 @@ def _launch_helper(args: list[str]) -> bool:
     CREATE_BREAKAWAY_FROM_JOB；若該旗標不被允許（不在 job 內或不允許脫離），
     退回不帶該旗標再試。
     """
-    DETACHED = 0x00000008
+    # 注意：千萬別用 DETACHED_PROCESS——實測它會讓子程序在父程序 os._exit 後
+    # 一起死掉（換檔腳本一行都跑不到）。改用 CREATE_NO_WINDOW（隱藏但存活）。
+    NO_WINDOW = 0x08000000
     NEW_GROUP = 0x00000200
     BREAKAWAY = 0x01000000
     sysroot = os.environ.get("SystemRoot", r"C:\Windows")
@@ -219,8 +221,8 @@ def _launch_helper(args: list[str]) -> bool:
         "-WindowStyle", "Hidden", "-File", *args,
     ]
     for flags, tag in (
-        (DETACHED | NEW_GROUP | BREAKAWAY, "breakaway"),
-        (DETACHED | NEW_GROUP, "detached"),
+        (NO_WINDOW | NEW_GROUP | BREAKAWAY, "nowindow+breakaway"),
+        (NO_WINDOW | NEW_GROUP, "nowindow"),
     ):
         try:
             p = subprocess.Popen(cmd, creationflags=flags, close_fds=True)
