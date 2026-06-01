@@ -1,6 +1,6 @@
 {
-  "version": "1.0.0",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.0.0/StarFollow_1.0.0.zip",
-  "sha256": "2e23d79d1bc4b240792f472ab0a20b027f6981d1eb7da019cc5ac467d097cef7",
-  "notes": "v1.0.0"
+  "version": "1.0.1",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.0.1/StarFollow_1.0.1.zip",
+  "sha256": "5efe92ec7e81398d611c1b3d16daaeb3cf5094fc771e1a893a18716b58acddb7",
+  "notes": "換桌不跟莊/閒；對象只下莊/閒就直接換桌；黏桌跟到沒得跟才換；嚴格比對暱稱不再跟錯路人"
 }
