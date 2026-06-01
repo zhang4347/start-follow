@@ -75,6 +75,9 @@ room:
   patrol_finalize_at_t: 6
   patrol_ocr_at_t: 11      # 保留（目前換房未用）
   patrol_ocr_retry_at_t: 9 # 保留（目前換房未用）
+  # 黏桌：連續幾局都沒跟到邊注才換桌。設 2 可容忍偶發 OCR 漏讀，避免對象還在下
+  # 卻因一次讀失敗就提早換桌（對象真的停手最多多看 1 局就換）。
+  patrol_leave_after_idle: 2
 betting:
   # 兩模式都「不跟」這些下注區（莊、閒）。
   follow_exclude:

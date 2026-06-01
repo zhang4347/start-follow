@@ -99,6 +99,9 @@ class RoomConfig:
     patrol_finalize_at_t: int = 14
     patrol_ocr_at_t: int = 11
     patrol_ocr_retry_at_t: int = 9
+    # 黏桌：連續幾局沒跟到邊注（含 OCR 暫時漏讀）才換桌。設 >1 可容忍偶發漏讀，
+    # 避免對象其實還在下、卻因一次讀失敗就提早換桌。
+    patrol_leave_after_idle: int = 2
 
 
 @dataclass
@@ -273,6 +276,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
             patrol_finalize_at_t=int(rm.get("patrol_finalize_at_t", 14)),
             patrol_ocr_at_t=int(rm.get("patrol_ocr_at_t", 11)),
             patrol_ocr_retry_at_t=int(rm.get("patrol_ocr_retry_at_t", 9)),
+            patrol_leave_after_idle=int(rm.get("patrol_leave_after_idle", 2)),
         ),
         betting=BettingConfig(
             follow_exclude=[str(x) for x in (bt.get("follow_exclude") or ["莊", "閒"])],
@@ -393,6 +397,7 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
         "patrol_finalize_at_t": cfg.room.patrol_finalize_at_t,
         "patrol_ocr_at_t": cfg.room.patrol_ocr_at_t,
         "patrol_ocr_retry_at_t": cfg.room.patrol_ocr_retry_at_t,
+        "patrol_leave_after_idle": cfg.room.patrol_leave_after_idle,
     }
     data["betting"] = {
         "follow_exclude": cfg.betting.follow_exclude,

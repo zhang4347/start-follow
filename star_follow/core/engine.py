@@ -1248,8 +1248,9 @@ class FollowEngine:
                     return "timeout"
                 self._scroll_stats_to_top()
                 opened = True
-                # 預定位欄位（只 OCR 表頭，確認對象在不在；不在就立刻換桌）
-                self._resolve_columns(capture_client(win))
+                # 預定位：完整讀一次解析欄位（與進桌偵測同法，比只讀表頭可靠），確認對象在
+                self._build_plan(capture_client(win), refresh_only=False, include_scroll=True)
+                logger.info("No.%s 預定位欄位=%s", cur, self.ctx.resolved_columns)
                 if not self.ctx.resolved_columns:
                     if not self._close_stats_panel(capture_client(win)):
                         self._force_close_stats(capture_client(win), reason="巡房對象不在")
@@ -1267,6 +1268,7 @@ class FollowEngine:
                     self._force_close_stats(capture_client(win), reason="巡房定稿關表")
                 # 關表後倒數露出來，用「真實 T」當下注安全閘（時鐘僅用來決定何時讀）
                 t_bet, cd_color = self._read_cd_stable()
+                logger.info("No.%s 定稿讀取 present=%s 計畫=%s（T=%s）", cur, present, plan, t_bet)
                 if not present:
                     return "absent"
                 if not plan:
@@ -1303,23 +1305,34 @@ class FollowEngine:
         if not present:
             logger.info("No.%s 無追蹤對象，換下一桌", cur)
             return "switch"
+        leave_after = max(1, self.cfg.room.patrol_leave_after_idle)
         logger.info(
-            "No.%s 有追蹤對象，黏桌跟注（提早開表、撐到剩 T<=%s 才定稿）",
+            "No.%s 有追蹤對象，黏桌跟注（撐到剩 T<=%s 定稿；連續 %d 局沒得跟才換桌）",
             cur,
             self.cfg.room.patrol_finalize_at_t,
+            leave_after,
         )
+        idle = 0  # 連續「沒跟到邊注」的局數（含 OCR 暫時漏讀）
         while self._running:
             result = self._patrol_follow_one_window(cur)
             if result == "bet":
+                idle = 0
                 self._patrol_wait_round_end()  # 等本局開完牌再進下一局，避免棄注
                 continue
-            if result == "absent":
-                logger.info("No.%s 對象已離開，換下一桌", cur)
-            elif result == "no_bet":
-                logger.info("No.%s 對象本局未下邊注，換下一桌", cur)
-            else:
+            if result == "timeout":
                 logger.info("No.%s 等下注窗口逾時，換下一桌", cur)
-            return "switch"
+                return "switch"
+            # absent / no_bet：對象可能只是這局沒下邊注，或 OCR 暫時漏讀。
+            # 不要一次就走——連續達門檻才換桌，避免對象還在下卻被提早放掉。
+            idle += 1
+            logger.info(
+                "No.%s 本局沒跟到（%s），連續 %d/%d 局",
+                cur, result, idle, leave_after,
+            )
+            if idle >= leave_after:
+                logger.info("No.%s 連續 %d 局沒得跟，換下一桌", cur, idle)
+                return "switch"
+            self._patrol_wait_round_end()  # 留桌：等本局開完牌再看下一局
         return "switch"
 
     def _patrol_wait_round_end(self) -> None:

@@ -206,22 +206,65 @@ def read_column_headers(table: np.ndarray, layout: dict) -> list[tuple[int, str]
     return out
 
 
+# 跟注是真金白銀，比對要「精準優先」：寧可錯過也不要跟錯路人。
+_NAME_MATCH_CUTOFF = 0.8   # 模糊比對最低相似度（容忍約 1 個字的 OCR 誤差）
+_NAME_MATCH_MARGIN = 0.08  # 最佳與第二名差距需大於此值，否則視為無法分辨→不跟
+
+
+def _norm_name(s: str) -> str:
+    """正規化暱稱：全形轉半形、去空白、去除非中英數雜訊符號，利於精準比對。"""
+    if not s:
+        return ""
+    out = []
+    for ch in s:
+        o = ord(ch)
+        if o == 0x3000:
+            out.append(" ")
+        elif 0xFF01 <= o <= 0xFF5E:
+            out.append(chr(o - 0xFEE0))
+        else:
+            out.append(ch)
+    t = "".join(out)
+    return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", t)
+
+
 def find_column_for_player(
     headers: list[tuple[int, str]],
     player_name: str,
     hint: int | None = None,
 ) -> int | None:
-    """依暱稱找欄；hint 僅在表頭 OCR 也確認時採用。"""
-    for idx, name in headers:
-        if not name:
-            continue
-        if match_player_name([name], player_name):
-            return idx
-    if hint is not None:
-        for idx, name in headers:
-            if idx == hint and name and match_player_name([name], player_name):
-                return hint
-    return None
+    """在所有表頭中找出「最符合」這個暱稱的欄；精準優先，找不到夠像的就回 None。"""
+    target = _norm_name(player_name)
+    if not target:
+        return None
+    named = [(idx, _norm_name(name)) for idx, name in headers if name]
+    named = [(idx, n) for idx, n in named if n]
+    if not named:
+        return None
+
+    # 1) 正規化後完全相同（最可靠）
+    exact = [idx for idx, n in named if n == target]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        # 罕見：多欄同名 → 用 hint 才能確定，否則放棄（不亂猜）
+        return hint if (hint is not None and hint in exact) else None
+
+    # 2) 高相似度模糊比對：取最佳，且需明顯勝過第二名，避免跟到名字相近的路人
+    scored = sorted(
+        (
+            (difflib.SequenceMatcher(None, target, n).ratio(), idx)
+            for idx, n in named
+        ),
+        key=lambda x: x[0],
+        reverse=True,
+    )
+    best_r, best_idx = scored[0]
+    if best_r < _NAME_MATCH_CUTOFF:
+        return None
+    if len(scored) > 1 and scored[1][0] >= best_r - _NAME_MATCH_MARGIN:
+        return None
+    return best_idx
 
 
 def _parse_single_column(
@@ -271,16 +314,29 @@ def parse_bottom_row_amount(
 
 
 def match_player_name(players: list[str], target: str) -> str | None:
-    target = target.strip()
-    if target in players:
-        return target
-    partial = [p for p in players if len(p) >= 2 and (p in target or target in p)]
-    if partial:
-        return max(partial, key=len)
-    if not players:
+    """精準比對暱稱：正規化後完全相同優先，否則高相似度且明顯勝過第二名才算。
+    比對不到夠像的就回 None（寧可錯過也不要跟錯路人）。"""
+    target_n = _norm_name(target)
+    if not target_n:
         return None
-    best = difflib.get_close_matches(target, players, n=1, cutoff=0.45)
-    return best[0] if best else None
+    named = [(p, _norm_name(p)) for p in players]
+    named = [(p, n) for p, n in named if n]
+    if not named:
+        return None
+    for p, n in named:
+        if n == target_n:
+            return p
+    scored = sorted(
+        ((difflib.SequenceMatcher(None, target_n, n).ratio(), p) for p, n in named),
+        key=lambda x: x[0],
+        reverse=True,
+    )
+    best_r, best_p = scored[0]
+    if best_r < _NAME_MATCH_CUTOFF:
+        return None
+    if len(scored) > 1 and scored[1][0] >= best_r - _NAME_MATCH_MARGIN:
+        return None
+    return best_p
 
 
 def resolve_follow_columns(
@@ -295,21 +351,13 @@ def resolve_follow_columns(
     table, _ = extract_stats_table(frame, cfg)
     layout = cfg.raw.get("stats_layout", {})
 
+    # 一律讀表頭重新確認欄位；hint 只當提示，不直接採用（換桌後舊欄位會指到路人）。
     resolved: dict[str, int] = {}
-    need_header: list[tuple[str, int | None]] = []
+    headers: list[tuple[int, str]] = read_column_headers(table, layout)
     for name, hint in follow_targets:
-        if hint is not None:
-            resolved[name] = hint
-        else:
-            need_header.append((name, hint))
-
-    headers: list[tuple[int, str]] = []
-    if need_header:
-        headers = read_column_headers(table, layout)
-        for name, hint in need_header:
-            col = find_column_for_player(headers, name, hint=hint)
-            if col is not None:
-                resolved[name] = col
+        col = find_column_for_player(headers, name, hint=hint)
+        if col is not None:
+            resolved[name] = col
 
     elapsed = (time.perf_counter() - t0) * 1000
     return StatsParseResult(
@@ -442,13 +490,9 @@ def extract_player_bets(
     if column_index is not None and column_index in result.bets_by_column:
         raw = result.bets_by_column[column_index]
     if not raw:
-        matched = match_player_name(result.players, player_name) or player_name
-        raw = result.bets_by_player.get(matched, {})
-    if not raw:
-        for key, val in result.bets_by_player.items():
-            if player_name in key or key in player_name:
-                raw = val
-                break
+        matched = match_player_name(result.players, player_name)
+        if matched is not None:
+            raw = result.bets_by_player.get(matched, {})
     out: dict[str, int] = {}
     for stats_name, amount in raw.items():
         bet_key = stats_to_bet.get(stats_name, stats_name)
