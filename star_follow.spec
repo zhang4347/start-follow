@@ -9,6 +9,7 @@
 對外可編輯檔（config.yaml、data/follow_list.json、logs/）由打包腳本放在 exe 旁。
 """
 
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
@@ -18,6 +19,35 @@ TESS_SRC = Path(r"C:\Program Files\Tesseract-OCR")
 
 # --- 一起打包的資料檔（verbatim 複製，不做相依分析） ---
 datas = []
+
+# --- OpenSSL DLL（HTTPS 必需） ---
+# Anaconda 的 OpenSSL DLL 放在 Library\bin，PyInstaller 預設抓不到，導致 _ssl
+# 無法載入 → 整支 exe 不能連 HTTPS（自動更新、Google 試算表上傳全部失敗）。
+# 這裡明確把 libssl/libcrypto 收進來放到根目錄，並補上 _ssl/_hashlib 擴充。
+binaries = []
+# venv 的 sys.prefix 沒有 Library\bin；OpenSSL DLL 在 base_prefix（Anaconda）下，
+# 所以兩個 prefix 都要找。
+_PREFIXES = [Path(sys.prefix)]
+_base = Path(getattr(sys, "base_prefix", sys.prefix))
+if _base not in _PREFIXES:
+    _PREFIXES.append(_base)
+_ssl_names = ("libssl-3-x64.dll", "libcrypto-3-x64.dll",
+              "libssl-3.dll", "libcrypto-3.dll")
+_seen_dll = set()
+for _pref in _PREFIXES:
+    for _ssl_dir in (_pref / "Library" / "bin", _pref / "DLLs", _pref):
+        for _name in _ssl_names:
+            _p = _ssl_dir / _name
+            if _p.is_file() and _name not in _seen_dll:
+                binaries.append((str(_p), "."))
+                _seen_dll.add(_name)
+    for _pyd in ("_ssl.pyd", "_hashlib.pyd"):
+        _p = _pref / "DLLs" / _pyd
+        if _p.is_file() and _pyd not in _seen_dll:
+            binaries.append((str(_p), "."))
+            _seen_dll.add(_pyd)
+if not any(n.startswith("libssl") for n in _seen_dll):
+    raise SystemExit("打包中止：找不到 OpenSSL DLL（libssl/libcrypto），HTTPS 會壞。請確認 Anaconda Library\\bin。")
 
 # Tesseract 主程式 + 執行所需 DLL（只取 tesseract.exe，不含訓練工具）
 datas.append((str(TESS_SRC / "tesseract.exe"), "tesseract"))
@@ -42,6 +72,11 @@ hiddenimports = [
     "pydirectinput",
     "star_follow.monitor.sheet_uploader",
     "star_follow.update.updater",
+    # HTTPS 相關（自動更新／Google 試算表上傳都需要）
+    "ssl",
+    "_ssl",
+    "_hashlib",
+    "certifi",
 ]
 
 # Google 試算表上傳（gspread + google-auth）：namespace 套件需明確收集
@@ -59,7 +94,7 @@ datas += collect_data_files("certifi")
 a = Analysis(
     ["star_follow_app.py"],
     pathex=[str(PROJECT)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
