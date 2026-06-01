@@ -1,6 +1,6 @@
 {
-  "version": "1.0.9",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.0.9/StarFollow_1.0.9.zip",
-  "sha256": "c75325663c27dba664a0bcccd97c2627f06fb6d10205dbd3598db74a4c987f6b",
-  "notes": "修正換檔暫存被誤刪（解壓失敗）；自動更新全鏈路修正"
+  "version": "1.1.1",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.1.1/StarFollow_1.1.1.zip",
+  "sha256": "9faffcffd30cd76521de5b3a9e7b9986016f08e405b3b22af3e1276e0de63484",
+  "notes": "換檔子程序改用 CREATE_NO_WINDOW 才能在主程式結束後存活；自動更新修正"
 }
