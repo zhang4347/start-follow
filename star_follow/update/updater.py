@@ -101,7 +101,12 @@ def _find_program_root(extracted: Path) -> Path | None:
 
 
 def _write_apply_script(work: Path) -> Path:
-    """產生換檔用 PowerShell 腳本。"""
+    """產生換檔用 PowerShell 腳本。
+
+    重點：全程寫 log 到 $Dst\\logs\\update_apply.log（方便事後查為何沒換成功），
+    並做到：等舊程式完全結束 → 把舊 exe 先改名讓位（避免被鎖） → robocopy 蓋上
+    新檔（保留使用者檔）→ 檢查 robocopy 退出碼 → 重開程式 → 清暫存。
+    """
     script = r"""
 param(
   [int]$ProcId,
@@ -109,17 +114,60 @@ param(
   [string]$Dst,
   [string]$Exe
 )
-$ErrorActionPreference = "SilentlyContinue"
-# 等主程式關閉
-if ($ProcId -gt 0) { Wait-Process -Id $ProcId -Timeout 60 }
+$ErrorActionPreference = "Continue"
+$log = Join-Path $Dst "logs\update_apply.log"
+try { New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null } catch {}
+function Log($m) {
+  $line = "{0}  {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $m
+  try { Add-Content -Path $log -Value $line -Encoding UTF8 } catch {}
+}
+Log "=== 換檔開始 ProcId=$ProcId ==="
+Log "Src=$Src"
+Log "Dst=$Dst"
+Log "Exe=$Exe"
+
+# 1) 等主程式完全結束（最多 30 秒輪詢，避免檔案還被鎖）
+if ($ProcId -gt 0) {
+  for ($i = 0; $i -lt 30; $i++) {
+    $p = Get-Process -Id $ProcId -ErrorAction SilentlyContinue
+    if (-not $p) { break }
+    Start-Sleep -Milliseconds 500
+  }
+}
 Start-Sleep -Seconds 1
-# 蓋上新檔，但保留使用者檔案
+Log "主程式已結束，開始換檔"
+
+# 2) 舊 exe 先改名讓位（即使仍被短暫鎖住，新檔也能寫入）
+$old = "$Exe.old"
+try { if (Test-Path $old) { Remove-Item $old -Force -ErrorAction SilentlyContinue } } catch {}
+try { if (Test-Path $Exe) { Rename-Item -Path $Exe -NewName ([System.IO.Path]::GetFileName($old)) -Force -ErrorAction SilentlyContinue } } catch { Log "改名舊 exe 失敗：$_" }
+
+# 3) 蓋上新檔，但保留使用者檔案
 $xf = @('config.yaml','啟動設定.txt','service_account.json')
 $xd = @('data','logs')
-robocopy $Src $Dst /E /XF $xf /XD $xd /R:2 /W:1 | Out-Null
-# 清掉暫存並重開程式
-Start-Process -FilePath $Exe
-Remove-Item $Src -Recurse -Force
+$roboLog = Join-Path $Dst "logs\update_robocopy.log"
+robocopy $Src $Dst /E /XF $xf /XD $xd /R:3 /W:2 /NP /LOG:$roboLog | Out-Null
+$code = $LASTEXITCODE
+Log "robocopy 退出碼=$code（<8 視為成功）"
+
+if ($code -ge 8) {
+  Log "robocopy 失敗，嘗試把舊 exe 還原以免無法啟動"
+  try { if ((Test-Path $old) -and -not (Test-Path $Exe)) { Rename-Item -Path $old -NewName ([System.IO.Path]::GetFileName($Exe)) -Force } } catch {}
+} else {
+  try { if (Test-Path $old) { Remove-Item $old -Force -ErrorAction SilentlyContinue } } catch {}
+}
+
+# 4) 重開程式
+if (Test-Path $Exe) {
+  Log "重新啟動：$Exe"
+  try { Start-Process -FilePath $Exe -WorkingDirectory $Dst } catch { Log "重啟失敗：$_" }
+} else {
+  Log "找不到 $Exe，無法重啟"
+}
+
+# 5) 清掉暫存
+try { Remove-Item $Src -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+Log "=== 換檔結束 ==="
 """
     sp = work / "apply_update.ps1"
     # 用 UTF-8 with BOM 讓 PowerShell 正確讀中文
@@ -165,6 +213,36 @@ def _apply(zip_path: Path, install_dir: Path) -> bool:
     return True
 
 
+def _marker_path() -> Path:
+    return paths.app_dir() / "data" / ".update_attempt.json"
+
+
+def _read_marker() -> dict:
+    try:
+        return json.loads(_marker_path().read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _write_marker(target: str) -> None:
+    try:
+        import time as _t
+
+        p = _marker_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"target": target, "ts": _t.time()}),
+                     encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _clear_marker() -> None:
+    try:
+        _marker_path().unlink()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def maybe_update(cfg: UpdateConfig) -> bool:
     """啟動時檢查並（若設定 auto_apply）套用更新。
 
@@ -179,7 +257,20 @@ def maybe_update(cfg: UpdateConfig) -> bool:
         return False
     remote = str(man["version"])
     if not is_newer(remote, CURRENT_VERSION):
+        # 已是最新：清掉「上次嘗試」標記（代表先前若有更新已成功）
+        _clear_marker()
         print(f"已是最新版 v{CURRENT_VERSION}")
+        return False
+
+    # 防無限更新迴圈：若上次才剛嘗試更新到同一版、但這次啟動還是舊版，
+    # 代表換檔沒成功；不要再自動下載換檔（會一直重開），改為提示後照常啟動。
+    import time as _t
+
+    mk = _read_marker()
+    if mk.get("target") == remote and (_t.time() - float(mk.get("ts", 0))) < 1800:
+        print(f"偵測到上次自動更新到 v{remote} 未成功（仍為 v{CURRENT_VERSION}）。")
+        print("已略過這次自動更新以免一直重開；請改用手動更新（見使用說明）。")
+        logger.warning("自動更新疑似失敗：上次已嘗試 v%s，仍停在 v%s", remote, CURRENT_VERSION)
         return False
 
     notes = man.get("notes") or ""
@@ -208,7 +299,12 @@ def maybe_update(cfg: UpdateConfig) -> bool:
 
     install_dir = paths.app_dir()
     print("套用更新並重新啟動…")
+    # 先記下「這次要更新到哪一版」；若換檔失敗、下次啟動還是舊版，就靠這個標記
+    # 避免無限重開。
+    _write_marker(remote)
     if _apply(tmp_zip, install_dir):
         # 立刻硬結束，讓換檔腳本能蓋掉檔案（略過 frozen 的按 Enter 暫停）
         os._exit(0)
+    # 啟動換檔腳本失敗：清掉標記，照常啟動
+    _clear_marker()
     return False
