@@ -303,6 +303,7 @@ def main() -> int:
     from star_follow.version import __version__ as _ver
 
     print(f"StarFollow v{_ver}")
+    print("（自動更新測試版 1.0.3 — 此行僅用於確認更新已套用）")
     print("引擎啟動", mode, f"[{room_mode}]", f"({admin_tag})")
     print(f"記錄檔：{log_path}")
     from star_follow.vision.ocr import warmup_ocr
