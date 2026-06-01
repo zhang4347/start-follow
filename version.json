@@ -1,6 +1,6 @@
 {
-  "version": "1.0.7",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.0.7/StarFollow_1.0.7.zip",
-  "sha256": "c201a1d63ca6f0f34350e6e2db49b2c4e6f1615ca41d76f683c8d9b5c1279cad",
-  "notes": "換檔子程序脫離 job 存活、固定暫存目錄、全程 log；驗證自動更新"
+  "version": "1.0.9",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.0.9/StarFollow_1.0.9.zip",
+  "sha256": "c75325663c27dba664a0bcccd97c2627f06fb6d10205dbd3598db74a4c987f6b",
+  "notes": "修正換檔暫存被誤刪（解壓失敗）；自動更新全鏈路修正"
 }
