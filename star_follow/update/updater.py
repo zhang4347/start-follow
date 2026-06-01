@@ -24,9 +24,10 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
-import tempfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -40,6 +41,29 @@ logger = logging.getLogger(__name__)
 # 換檔時要保留、不被覆蓋的使用者檔案／資料夾（相對安裝資料夾）
 _PRESERVE_FILES = ["config.yaml", "啟動設定.txt", "service_account.json"]
 _PRESERVE_DIRS = ["data", "logs"]
+
+# 更新暫存用固定 ASCII 目錄（避免提權後 %TEMP% 路徑不一致、或中文路徑問題）。
+_STAGE_DIR = Path(r"C:\ProgramData\StarFollow\update")
+
+
+def _ulog(msg: str) -> None:
+    """更新流程自有 log，直接寫到安裝資料夾的 logs\\update.log。
+
+    （maybe_update 在主程式 logging 建立前就執行，且換檔會 os._exit，所以這裡
+    自己寫檔，確保即使換檔失敗或子程序被殺，也留得下 Python 端的軌跡。）
+    """
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {msg}"
+    try:
+        logger.info("[update] %s", msg)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        p = paths.app_dir() / "logs" / "update.log"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _parse_ver(s: str) -> tuple[int, ...]:
@@ -175,41 +199,75 @@ Log "=== 換檔結束 ==="
     return sp
 
 
+def _launch_helper(args: list[str]) -> bool:
+    """啟動換檔用 powershell 子程序，並確保它能脫離父程序的 job 而存活。
+
+    之前的問題：父程序 os._exit 後，detached 子程序仍可能因為同屬一個 job
+    （kill-on-close）被一起殺掉，導致換檔腳本一行都沒跑。這裡加上
+    CREATE_BREAKAWAY_FROM_JOB；若該旗標不被允許（不在 job 內或不允許脫離），
+    退回不帶該旗標再試。
+    """
+    DETACHED = 0x00000008
+    NEW_GROUP = 0x00000200
+    BREAKAWAY = 0x01000000
+    sysroot = os.environ.get("SystemRoot", r"C:\Windows")
+    ps_exe = os.path.join(sysroot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    if not os.path.isfile(ps_exe):
+        ps_exe = "powershell"
+    cmd = [
+        ps_exe, "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-WindowStyle", "Hidden", "-File", *args,
+    ]
+    for flags, tag in (
+        (DETACHED | NEW_GROUP | BREAKAWAY, "breakaway"),
+        (DETACHED | NEW_GROUP, "detached"),
+    ):
+        try:
+            p = subprocess.Popen(cmd, creationflags=flags, close_fds=True)
+            _ulog(f"換檔子程序已啟動（{tag}）pid={p.pid}")
+            return True
+        except Exception as exc:  # noqa: BLE001
+            _ulog(f"以 {tag} 啟動換檔子程序失敗：{exc}")
+    return False
+
+
 def _apply(zip_path: Path, install_dir: Path) -> bool:
     """解壓、產生腳本、啟動腳本並回傳是否成功啟動換檔流程。"""
-    work = Path(tempfile.mkdtemp(prefix="StarFollowUpd_"))
-    extracted = work / "extracted"
+    # 用固定 ASCII 目錄當暫存（不受提權後 %TEMP% 不一致影響，也方便事後查）
+    try:
+        if _STAGE_DIR.exists():
+            shutil.rmtree(_STAGE_DIR, ignore_errors=True)
+        _STAGE_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:  # noqa: BLE001
+        _ulog(f"建立暫存目錄失敗 {_STAGE_DIR}：{exc}")
+        return False
+
+    extracted = _STAGE_DIR / "extracted"
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(extracted)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("解壓更新包失敗：%s", exc)
+        _ulog(f"解壓更新包失敗：{exc}")
         return False
     root = _find_program_root(extracted)
     if root is None:
-        logger.warning("更新包裡找不到 StarFollow.exe，放棄更新")
+        _ulog("更新包裡找不到 StarFollow.exe，放棄更新")
         return False
 
-    ps = _write_apply_script(work)
+    ps = _write_apply_script(_STAGE_DIR)
     exe = str(install_dir / "StarFollow.exe")
-    DETACHED = 0x00000008
-    NEW_GROUP = 0x00000200
-    try:
-        subprocess.Popen(
-            [
-                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                "-WindowStyle", "Hidden", "-File", str(ps),
-                "-ProcId", str(os.getpid()),
-                "-Src", str(root),
-                "-Dst", str(install_dir),
-                "-Exe", exe,
-            ],
-            creationflags=DETACHED | NEW_GROUP,
-            close_fds=True,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("啟動換檔腳本失敗：%s", exc)
+    _ulog(f"準備換檔：Src={root} Dst={install_dir}")
+    _ulog(f"換檔腳本：{ps}")
+    if not _launch_helper([
+        str(ps),
+        "-ProcId", str(os.getpid()),
+        "-Src", str(root),
+        "-Dst", str(install_dir),
+        "-Exe", exe,
+    ]):
         return False
+    # 給子程序一點起跑時間，避免父程序立刻 os._exit 造成搶跑
+    time.sleep(1.5)
     return True
 
 
@@ -275,6 +333,7 @@ def maybe_update(cfg: UpdateConfig) -> bool:
 
     notes = man.get("notes") or ""
     print(f"發現新版本 v{remote}（目前 v{CURRENT_VERSION}）{('：' + notes) if notes else ''}")
+    _ulog(f"發現新版本 v{remote}（目前 v{CURRENT_VERSION}）")
 
     if not cfg.auto_apply:
         print("（auto_apply=false，僅提示，不自動更新）")
@@ -283,22 +342,32 @@ def maybe_update(cfg: UpdateConfig) -> bool:
         logger.info("開發模式不執行自動換檔（請改用 git pull）")
         return False
 
-    # 下載更新包
-    tmp_zip = Path(tempfile.gettempdir()) / f"StarFollow_{remote}.zip"
+    # 下載更新包到固定 ASCII 暫存目錄
+    try:
+        _STAGE_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
+    tmp_zip = _STAGE_DIR / f"StarFollow_{remote}.zip"
     print("下載更新包中…")
+    _ulog(f"下載更新包：{man['url']} -> {tmp_zip}")
     # 下載逾時放寬，更新包通常較大
     if not _download(str(man["url"]), tmp_zip, max(cfg.timeout_s, 120.0)):
+        _ulog("下載更新包失敗")
         return False
+    _ulog(f"下載完成，大小={tmp_zip.stat().st_size if tmp_zip.exists() else 0}")
 
     want_hash = str(man.get("sha256") or "").strip().lower()
     if want_hash:
         got = _sha256(tmp_zip).lower()
         if got != want_hash:
+            _ulog(f"sha256 不符：預期 {want_hash} 實得 {got}")
             logger.warning("更新包校驗碼不符（預期 %s，實得 %s），放棄更新", want_hash, got)
             return False
+        _ulog("sha256 校驗通過")
 
     install_dir = paths.app_dir()
     print("套用更新並重新啟動…")
+    _ulog(f"套用更新，install_dir={install_dir}")
     # 先記下「這次要更新到哪一版」；若換檔失敗、下次啟動還是舊版，就靠這個標記
     # 避免無限重開。
     _write_marker(remote)
