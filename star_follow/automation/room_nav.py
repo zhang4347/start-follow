@@ -76,13 +76,15 @@ def _scaled_goto_x(cfg: AppConfig, win: GameWindow) -> int:
     return int(round(cfg.room.goto_x * win.client_width / max(1, cfg.window.reference_width)))
 
 
-_OCR_SCALE = 3.0
+_OCR_SCALE = 4.0
+_OCR_BORDER = 12  # 二值化後加白邊，tesseract 對貼邊的小字辨識較差
 
 
 def _ocr_numbers_with_y(crop: np.ndarray) -> list[tuple[int, int]]:
     """回傳 [(數字, crop 內 y 中心), ...]。
 
-    用 3x 放大 + 兩種 PSM（11 稀疏 / 6 區塊）合併，提高小數字辨識率。
+    放大 + 加白邊 + 多種 PSM（11 稀疏 / 6 區塊 / 4 欄）合併，盡量讀到每一列的
+    桌號（含 13、16 這種容易漏的兩位數）。
     """
     if crop.size == 0:
         return []
@@ -91,8 +93,12 @@ def _ocr_numbers_with_y(crop: np.ndarray) -> list[tuple[int, int]]:
     _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     if float(th.mean()) < 127:
         th = cv2.bitwise_not(th)
+    th = cv2.copyMakeBorder(
+        th, _OCR_BORDER, _OCR_BORDER, _OCR_BORDER, _OCR_BORDER,
+        cv2.BORDER_CONSTANT, value=255,
+    )
     out: list[tuple[int, int]] = []
-    for psm in (11, 6):
+    for psm in (11, 6, 4):
         config = f"--psm {psm} -c tessedit_char_whitelist=0123456789"
         try:
             data = pytesseract.image_to_data(th, config=config, output_type=pytesseract.Output.DICT)
@@ -108,7 +114,8 @@ def _ocr_numbers_with_y(crop: np.ndarray) -> list[tuple[int, int]]:
             except ValueError:
                 continue
             y_center = data["top"][i] + data["height"][i] // 2
-            out.append((val, int(y_center / _OCR_SCALE)))  # 還原縮放
+            # 扣掉白邊、還原縮放
+            out.append((val, int((y_center - _OCR_BORDER) / _OCR_SCALE)))
     return out
 
 
@@ -129,6 +136,20 @@ def read_list_rows(frame: np.ndarray, cfg: AppConfig, win: GameWindow) -> list[t
             continue
         rows.append((no, y + cy))
     return rows
+
+
+def read_list_rows_merged(
+    capture_fn: Callable[[], np.ndarray], cfg: AppConfig, win: GameWindow, *, reads: int = 2
+) -> list[tuple[int, int]]:
+    """連讀數次清單桌號欄並合併（同一桌號取多次 y 的平均），降低單次 OCR 漏讀。"""
+    bucket: dict[int, list[int]] = {}
+    for k in range(max(1, reads)):
+        for no, cy in read_list_rows(capture_fn(), cfg, win):
+            bucket.setdefault(no, []).append(cy)
+        if k + 1 < reads:
+            time.sleep(0.06)
+    merged = [(no, int(round(sum(ys) / len(ys)))) for no, ys in bucket.items()]
+    return sorted(merged, key=lambda t: t[1])
 
 
 def read_current_table(frame: np.ndarray, cfg: AppConfig, win: GameWindow) -> int | None:
@@ -200,11 +221,12 @@ def close_room_list(win: GameWindow, cfg: AppConfig, capture_fn: Callable[[], np
         time.sleep(0.3)
 
 
-def scroll_list(win: GameWindow, cfg: AppConfig, *, up: bool = False) -> None:
+def scroll_list(win: GameWindow, cfg: AppConfig, *, up: bool = False, clicks: int | None = None) -> None:
     pt = _scaled_point(cfg, win, "room_list_scroll")
     if pt is None:
         return
-    wheel_at_client(win, pt[0], pt[1], clicks=cfg.room.scroll_clicks, delta=120 if up else -120)
+    n = cfg.room.scroll_clicks if clicks is None else clicks
+    wheel_at_client(win, pt[0], pt[1], clicks=max(1, n), delta=120 if up else -120)
 
 
 def scroll_to_top(
@@ -229,7 +251,14 @@ def scroll_to_top(
     for _ in range(cfg.room.max_scroll_pages + 3):
         cur = tuple(no for no, _ in read_list_rows(capture_fn(), cfg, win))
         if cur and cur == prev:
-            return  # 連兩次可見桌號相同 → 已到頂
+            # 沒變動：可能到頂，也可能滾輪沒吃。用力往上捲一次再確認。
+            wheel_at_client(win, pt[0], pt[1], clicks=max(2, cfg.room.scroll_clicks + 1), delta=120)
+            time.sleep(0.22)
+            after = tuple(no for no, _ in read_list_rows(capture_fn(), cfg, win))
+            if after and after == cur:
+                return  # 用力捲仍沒動 → 確實到頂
+            prev = cur
+            continue
         prev = cur
         wheel_at_client(win, pt[0], pt[1], clicks=max(1, cfg.room.scroll_clicks), delta=120)
         time.sleep(0.18)
@@ -245,6 +274,54 @@ def confirm_switch(win: GameWindow, cfg: AppConfig) -> None:
     click_at(win, pt[0], pt[1], backend=cfg.automation.ui_click_backend)
 
 
+def _click_goto_row(win: GameWindow, cfg: AppConfig, capture_fn: Callable[[], np.ndarray],
+                    goto_x: int, target_no: int, cy_hint: int) -> bool:
+    """點某桌的「前往」鈕。點之前先重讀一次該桌目前的 y，避免清單在掃描期間飄移
+    造成點到隔壁列。讀不到就用 cy_hint。"""
+    ui_b = cfg.automation.ui_click_backend
+    cy = cy_hint
+    for no, ry in read_list_rows_merged(capture_fn, cfg, win, reads=2):
+        if no == target_no:
+            cy = ry
+            break
+    click_at(win, goto_x, cy, backend=ui_b)
+    confirm_switch(win, cfg)
+    return True
+
+
+def _scan_for_target(
+    win: GameWindow, cfg: AppConfig, capture_fn: Callable[[], np.ndarray],
+    goto_x: int, target_no: int, seen: set[int]
+) -> bool:
+    """從目前位置往下逐頁找 target_no；找到就點前往。
+
+    清單一頁只看得到 ~4 桌，需要靠滾輪逐頁往下。關鍵：滾輪有時不吃，畫面沒動，
+    這時「桌號和上一頁相同」可能是『真的到底』也可能是『沒捲動』。因此遇到沒變動時
+    先用更大力的滾輪再試一次，仍沒變才當作到底停手——避免誤判到底而停在原地不找。
+    回傳是否點了前往。"""
+    prev_page: tuple[int, ...] | None = None
+    for _page in range(cfg.room.max_scroll_pages + 2):
+        rows = read_list_rows_merged(capture_fn, cfg, win, reads=2)
+        page_set = tuple(no for no, _ in rows)
+        for no, cy in rows:
+            seen.add(no)
+            if no == target_no:
+                return _click_goto_row(win, cfg, capture_fn, goto_x, target_no, cy)
+        if page_set and page_set == prev_page:
+            # 沒變動：先用力捲一次（2 格）確認到底還是沒吃到滾輪
+            scroll_list(win, cfg, clicks=max(2, cfg.room.scroll_clicks + 1))
+            time.sleep(0.22)
+            after = tuple(no for no, _ in read_list_rows_merged(capture_fn, cfg, win, reads=1))
+            if after and after == page_set:
+                break  # 用力捲仍沒動 → 確實到底
+            prev_page = page_set
+            continue
+        prev_page = page_set
+        scroll_list(win, cfg)
+        time.sleep(0.18)
+    return False
+
+
 def goto_table(
     win: GameWindow, cfg: AppConfig, capture_fn: Callable[[], np.ndarray], target_no: int
 ) -> bool:
@@ -256,20 +333,13 @@ def goto_table(
     if goto_x <= 0:
         logger.warning("缺少 room.goto_x（請先跑 mark_rooms）")
         return False
-    ui_b = cfg.automation.ui_click_backend
-    scroll_to_top(win, cfg, capture_fn)  # 先回最頂，才掃得到上半部的桌號（含 No.1）
     seen: set[int] = set()
-    for _page in range(cfg.room.max_scroll_pages + 1):
-        frame = capture_fn()
-        rows = read_list_rows(frame, cfg, win)
-        for no, cy in rows:
-            seen.add(no)
-            if no == target_no:
-                click_at(win, goto_x, cy, backend=ui_b)
-                confirm_switch(win, cfg)
-                return True
-        scroll_list(win, cfg)
-        time.sleep(0.15)
+    # 最多兩輪：每輪先回頂再逐頁往下找；偶發 OCR 漏讀時第二輪通常能補回。
+    for attempt in range(2):
+        scroll_to_top(win, cfg, capture_fn)
+        if _scan_for_target(win, cfg, capture_fn, goto_x, target_no, seen):
+            return True
+        logger.info("找 No.%d 第%d輪未中，已見桌號=%s", target_no, attempt + 1, sorted(seen))
     logger.info("找 No.%d 失敗，整輪掃到的桌號=%s", target_no, sorted(seen))
     _save_debug(capture_fn(), cfg, win, f"goto_{target_no}_fail")
     return False
