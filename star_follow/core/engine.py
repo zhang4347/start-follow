@@ -643,16 +643,19 @@ class FollowEngine:
         plan = self._filter_follow_plan(plan)
         return cap_plan(plan, self.cfg.chip_values)
 
+    # 兩模式都「絕不跟」莊/閒（硬規則，不受 config 影響；換桌只跟特殊邊注、
+    # 掛桌也不跟莊閒，掛桌防踢補注是另一條路徑不經過這裡）。
+    _ALWAYS_EXCLUDE_FOLLOW = frozenset({"莊", "閒"})
+
     def _filter_follow_plan(self, plan: dict[str, int]) -> dict[str, int]:
-        """兩模式共用：濾掉設定中「不跟」的下注區（預設莊、閒）。"""
-        exclude = set(self.cfg.betting.follow_exclude or [])
-        if not exclude:
-            return plan
+        """兩模式共用：濾掉「不跟」的下注區。莊/閒一律不跟（硬規則），
+        另外再加上 config 的 follow_exclude（可額外排除其他區）。"""
+        exclude = set(self.cfg.betting.follow_exclude or []) | self._ALWAYS_EXCLUDE_FOLLOW
         out: dict[str, int] = {}
         for area, amount in plan.items():
             if area in exclude:
                 if amount > 0:
-                    logger.info("不跟 %s（依設定 follow_exclude），略過 %d", area, amount)
+                    logger.info("不跟 %s（莊/閒一律不跟），略過 %d", area, amount)
                 continue
             out[area] = amount
         return out
