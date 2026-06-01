@@ -233,16 +233,17 @@ def _launch_helper(args: list[str]) -> bool:
 
 def _apply(zip_path: Path, install_dir: Path) -> bool:
     """解壓、產生腳本、啟動腳本並回傳是否成功啟動換檔流程。"""
-    # 用固定 ASCII 目錄當暫存（不受提權後 %TEMP% 不一致影響，也方便事後查）
+    # 只清「解壓暫存子資料夾」，千萬別清整個 _STAGE_DIR——下載好的 zip 就放在
+    # 那裡，清掉會把要解壓的檔案一起刪掉。
+    extracted = _STAGE_DIR / "extracted"
     try:
-        if _STAGE_DIR.exists():
-            shutil.rmtree(_STAGE_DIR, ignore_errors=True)
-        _STAGE_DIR.mkdir(parents=True, exist_ok=True)
+        if extracted.exists():
+            shutil.rmtree(extracted, ignore_errors=True)
+        extracted.mkdir(parents=True, exist_ok=True)
     except Exception as exc:  # noqa: BLE001
-        _ulog(f"建立暫存目錄失敗 {_STAGE_DIR}：{exc}")
+        _ulog(f"建立解壓暫存資料夾失敗 {extracted}：{exc}")
         return False
 
-    extracted = _STAGE_DIR / "extracted"
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(extracted)
