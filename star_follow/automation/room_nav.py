@@ -33,20 +33,22 @@ _DIGITS = re.compile(r"\d+")
 def _save_debug(frame: np.ndarray, cfg: AppConfig, win: GameWindow, name: str) -> None:
     """把換房失敗當下的畫面存到 logs/room_debug，供校正清單 ROI 用。"""
     try:
+        from PIL import Image
+
         from star_follow.paths import logs_dir
 
         d = logs_dir() / "room_debug"
         d.mkdir(parents=True, exist_ok=True)
         ts = time.strftime("%H%M%S")
-        bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        cv2.imwrite(str(d / f"{ts}_{name}.png"), bgr)
+        # 用 PIL 存（cv2.imwrite 在非 ASCII 路徑（如 OneDrive\桌面）會默默失敗）。
+        Image.fromarray(frame).save(str(d / f"{ts}_{name}.png"))
         # 同時把清單桌號欄裁切另存，方便確認 OCR 看到什麼
         rect = _scaled_rect(cfg, win, "room_no_col")
         if rect is not None:
             x, y, w, h = rect
-            crop = bgr[y : y + h, x : x + w]
+            crop = frame[y : y + h, x : x + w]
             if crop.size:
-                cv2.imwrite(str(d / f"{ts}_{name}_nocol.png"), crop)
+                Image.fromarray(crop).save(str(d / f"{ts}_{name}_nocol.png"))
         logger.info("已存換房診斷圖：logs\\room_debug\\%s_%s.png", ts, name)
     except Exception:  # noqa: BLE001
         pass
@@ -78,44 +80,65 @@ def _scaled_goto_x(cfg: AppConfig, win: GameWindow) -> int:
 
 _OCR_SCALE = 4.0
 _OCR_BORDER = 12  # 二值化後加白邊，tesseract 對貼邊的小字辨識較差
+# 桌號是「No.X」字樣；用全文辨識＋抓 No. 後面的數字最穩（純數字白名單會把 No. 攪爛、
+# 還會漏掉單個數字 1/2）。也接受 ROI 內單獨出現的純數字。
+_NO_PAT = re.compile(r"[Nn][o0]\.?\s*(\d{1,2})")
+_BARE_NUM = re.compile(r"^\d{1,2}$")
+
+
+def _binarize_variants(crop: np.ndarray) -> list[np.ndarray]:
+    """產生數種二值化圖：OTSU（一般）＋固定門檻（救回被反白變淡的列，如灰掉的 No.1）。"""
+    gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+    gray = cv2.resize(gray, None, fx=_OCR_SCALE, fy=_OCR_SCALE, interpolation=cv2.INTER_CUBIC)
+    outs: list[np.ndarray] = []
+    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    if float(otsu.mean()) < 127:
+        otsu = cv2.bitwise_not(otsu)
+    outs.append(otsu)
+    # 文字為亮色（淺字深底）：固定門檻反白。高門檻顧亮字、低門檻救回變灰的滿桌列
+    # （如灰掉的 No.1）；兩者合併才能涵蓋亮列與淡列。
+    for thr in (135, 85):
+        _, fixed = cv2.threshold(gray, thr, 255, cv2.THRESH_BINARY_INV)
+        outs.append(fixed)
+    return [
+        cv2.copyMakeBorder(t, _OCR_BORDER, _OCR_BORDER, _OCR_BORDER, _OCR_BORDER,
+                           cv2.BORDER_CONSTANT, value=255)
+        for t in outs
+    ]
 
 
 def _ocr_numbers_with_y(crop: np.ndarray) -> list[tuple[int, int]]:
-    """回傳 [(數字, crop 內 y 中心), ...]。
+    """回傳 [(桌號, crop 內 y 中心), ...]。
 
-    放大 + 加白邊 + 多種 PSM（11 稀疏 / 6 區塊 / 4 欄）合併，盡量讀到每一列的
-    桌號（含 13、16 這種容易漏的兩位數）。
+    不用純數字白名單，改全文辨識後用正則抓「No.X」的數字（含單位數 1/2、雙位數
+    13/16）；同時跑 OTSU 與固定門檻兩種二值化、多種 PSM 合併，盡量不漏列。
     """
     if crop.size == 0:
         return []
-    gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
-    gray = cv2.resize(gray, None, fx=_OCR_SCALE, fy=_OCR_SCALE, interpolation=cv2.INTER_CUBIC)
-    _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    if float(th.mean()) < 127:
-        th = cv2.bitwise_not(th)
-    th = cv2.copyMakeBorder(
-        th, _OCR_BORDER, _OCR_BORDER, _OCR_BORDER, _OCR_BORDER,
-        cv2.BORDER_CONSTANT, value=255,
-    )
     out: list[tuple[int, int]] = []
-    for psm in (11, 6, 4):
-        config = f"--psm {psm} -c tessedit_char_whitelist=0123456789"
-        try:
-            data = pytesseract.image_to_data(th, config=config, output_type=pytesseract.Output.DICT)
-        except pytesseract.TesseractError:
-            continue
-        n = len(data.get("text", []))
-        for i in range(n):
-            txt = (data["text"][i] or "").strip()
-            if not _DIGITS.fullmatch(txt):
-                continue
+    for th in _binarize_variants(crop):
+        for psm in (6, 11):
             try:
-                val = int(txt)
-            except ValueError:
+                data = pytesseract.image_to_data(
+                    th, config=f"--psm {psm}", output_type=pytesseract.Output.DICT
+                )
+            except pytesseract.TesseractError:
                 continue
-            y_center = data["top"][i] + data["height"][i] // 2
-            # 扣掉白邊、還原縮放
-            out.append((val, int((y_center - _OCR_BORDER) / _OCR_SCALE)))
+            n = len(data.get("text", []))
+            for i in range(n):
+                txt = (data["text"][i] or "").strip()
+                if not txt:
+                    continue
+                m = _NO_PAT.search(txt)
+                num_s = m.group(1) if m else (txt if _BARE_NUM.match(txt) else None)
+                if num_s is None:
+                    continue
+                try:
+                    val = int(num_s)
+                except ValueError:
+                    continue
+                y_center = data["top"][i] + data["height"][i] // 2
+                out.append((val, int((y_center - _OCR_BORDER) / _OCR_SCALE)))
     return out
 
 
@@ -301,7 +324,7 @@ def _scan_for_target(
     回傳是否點了前往。"""
     prev_page: tuple[int, ...] | None = None
     for _page in range(cfg.room.max_scroll_pages + 2):
-        rows = read_list_rows_merged(capture_fn, cfg, win, reads=2)
+        rows = read_list_rows(capture_fn(), cfg, win)
         page_set = tuple(no for no, _ in rows)
         for no, cy in rows:
             seen.add(no)
