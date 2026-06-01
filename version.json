@@ -1,6 +1,6 @@
 {
-  "version": "1.1.1",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.1.1/StarFollow_1.1.1.zip",
-  "sha256": "9faffcffd30cd76521de5b3a9e7b9986016f08e405b3b22af3e1276e0de63484",
-  "notes": "換檔子程序改用 CREATE_NO_WINDOW 才能在主程式結束後存活；自動更新修正"
+  "version": "1.1.2",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.1.2/StarFollow_1.1.2.zip",
+  "sha256": "45720ed3b52d3bb07c9fa217c9b3032aaffd54998d7a5ff4c024fbda482644cc",
+  "notes": "換桌導覽強化：OCR 加強(4x+白邊+多PSM)不漏桌、點前往前重抓座標防飄移、滾輪沒吃時用力再捲避免誤判到底停在原地"
 }
