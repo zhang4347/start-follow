@@ -55,6 +55,9 @@ class RoundContext:
     plan: dict[str, int] = field(default_factory=dict)
     ui_prepared: bool = False
     recovery_open_tried: bool = False
+    # 最近一次 _build_plan「過濾前」對象實際下注的區域（含莊/閒），供換桌判斷
+    # 「對象只下莊/閒（不是我們要跟的）→ 不黏桌」用。
+    last_raw_bet_areas: set[str] = field(default_factory=set)
 
 
 class FollowEngine:
@@ -640,6 +643,9 @@ class FollowEngine:
                 plan[bet_key] = plan.get(bet_key, 0) + amount
                 logger.info("最底列有數字 → %s：%s %d", scroll_row, name, amount)
 
+        # 記錄「過濾前」對象實際下注的區域（含莊/閒），供換桌邏輯判斷對象是否
+        # 只下莊/閒。
+        self.ctx.last_raw_bet_areas = {area for area, amt in plan.items() if amt > 0}
         plan = self._filter_follow_plan(plan)
         return cap_plan(plan, self.cfg.chip_values)
 
@@ -1264,14 +1270,22 @@ class FollowEngine:
                 frame = capture_client(win)
                 plan = self._build_plan(frame, refresh_only=True, include_scroll=True)
                 present = bool(self.ctx.resolved_columns)
+                raw_areas = set(self.ctx.last_raw_bet_areas)
                 if not self._close_stats_panel(capture_client(win)):
                     self._force_close_stats(capture_client(win), reason="巡房定稿關表")
                 # 關表後倒數露出來，用「真實 T」當下注安全閘（時鐘僅用來決定何時讀）
                 t_bet, cd_color = self._read_cd_stable()
-                logger.info("No.%s 定稿讀取 present=%s 計畫=%s（T=%s）", cur, present, plan, t_bet)
+                logger.info(
+                    "No.%s 定稿讀取 present=%s 可跟=%s 原始區=%s（T=%s）",
+                    cur, present, plan, raw_areas, t_bet,
+                )
                 if not present:
                     return "absent"
                 if not plan:
+                    # 對象有下注、但只下莊/閒（不是我們要跟的）→ 不黏桌，直接換。
+                    if raw_areas & {"莊", "閒"}:
+                        return "main_only"
+                    # 完全沒讀到下注（對象本局沒下 或 OCR 漏讀）→ 交由容忍機制。
                     return "no_bet"
                 logger.info("No.%s 定稿跟注 %s（T=%s）", cur, plan, t_bet)
                 if t_bet is not None and not self._can_bet_now(t_bet, cd_color):
@@ -1321,6 +1335,10 @@ class FollowEngine:
                 continue
             if result == "timeout":
                 logger.info("No.%s 等下注窗口逾時，換下一桌", cur)
+                return "switch"
+            if result == "main_only":
+                # 對象只下莊/閒（不是我們要跟的）→ 立刻換桌，不黏、不容忍。
+                logger.info("No.%s 對象只下莊/閒，不跟，換下一桌", cur)
                 return "switch"
             # absent / no_bet：對象可能只是這局沒下邊注，或 OCR 暫時漏讀。
             # 不要一次就走——連續達門檻才換桌，避免對象還在下卻被提早放掉。
