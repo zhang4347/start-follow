@@ -1,0 +1,15 @@
+mss>=9.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0,<2.0
+Pillow>=10.0.0
+pytesseract>=0.3.10
+pydirectinput>=1.0.4
+PyQt6>=6.6.0
+pywin32>=306
+PyYAML>=6.0.1
+# 餘額上傳 Google 試算表用
+gspread>=6.0.0
+google-auth>=2.0.0
+cachetools>=5.0.0
+# Optional: paddleocr for Chinese nicknames (large download)
+# paddleocr>=2.7.0

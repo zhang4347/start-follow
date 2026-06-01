@@ -1,0 +1,268 @@
+window:
+  title_substring: 星城Online
+  # 若仍找不到視窗，可在此加實際標題列上的字，例如：
+  # title_aliases:
+  # - 星城
+  reference_width: 1280
+  reference_height: 720
+timing:
+  poll_ms: 150
+  open_stats_at_t: 20
+  open_stats_latest_t: 15
+  min_round_start_t: 19
+  prefetch_at_t: 15
+  finalize_at_t: 6          # 掛房定稿時間（越小越晚下注，越能避免對方下了又收）
+  ocr_at_t: 5
+  ocr_retry_at_t: 4
+  min_bet_t: 2
+  max_bet_t: 10
+  save_screenshot_on_ocr: false
+  click_delay_ms_min: 30
+  click_delay_ms_max: 80
+  bet_click_delay_ms_min: 15
+  bet_click_delay_ms_max: 35
+  software_countdown: true
+  countdown_anchor_t: 20
+  countdown_resync_tolerance: 1
+stats:
+  manual_panel: false
+  open_retries: 3
+  close_retries: 5
+  menu_delay_s: 0.65
+  stats_open_wait_s: 2.5
+  close_click_wait_s: 0.35
+  force_clean_on_round_start: true
+  idle_cleanup: false
+  idle_cleanup_cooldown_s: 45.0
+automation:
+  menu_click_backend: win32
+  ui_click_backend: win32
+safety:
+  max_ui_fail_streak: 5
+  max_rounds: 0
+  max_total_stake: 0
+  max_stake_per_round: 0
+  audit_screenshot: true
+room:
+  mode: stay
+  tables:
+  - 1
+  - 2
+  - 3
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+  - 11
+  - 12
+  - 13
+  - 14
+  - 16
+  - 17
+  - 19
+  # 換房：下注窗口剩 >= min_enter_t 秒才值得開表跟（不足就等下一窗）。
+  min_enter_t: 8
+  goto_x: 1147
+  switch_confirm_s: 1.6
+  result_wait_timeout_s: 75.0
+  result_retry_s: 3.0
+  scroll_clicks: 1
+  max_scroll_pages: 14
+  # 換房定稿時點：提早開表後，撐到「剩 patrol_finalize_at_t 秒」才讀最終金額並跟注
+  # （與掛房一致，盡量跟到對象最後的注）。讀數約需 2~3 秒，故實際下注落在更後面。
+  patrol_finalize_at_t: 6
+  patrol_ocr_at_t: 11      # 保留（目前換房未用）
+  patrol_ocr_retry_at_t: 9 # 保留（目前換房未用）
+betting:
+  # 兩模式都「不跟」這些下注區（莊、閒）。
+  follow_exclude:
+  - 莊
+  - 閒
+  # 掛房防踢：連續 N 局我方都沒下注，就自己補一手最小注避免被踢。
+  anti_kick_enabled: true
+  anti_kick_idle_rounds: 5   # 連續幾局沒下注就補注（第 5 局補）
+  anti_kick_side: 閒          # 補注下哪一邊（莊/閒）
+  anti_kick_amount: 0         # 0 = 用最小籌碼
+telegram:
+  enabled: false          # 已停用，改用下方 sheet 上傳
+  bot_token: ''
+  chat_id: ''
+  interval_min: 30
+  report_on_start: true
+sheet:
+  enabled: true                        # 改 true 才會每整點上傳餘額
+  service_account_file: service_account.json  # 服務帳戶金鑰檔（放 exe 旁）
+  spreadsheet_id: 1cE3B-Uk0ST3Uj9YNKAP_7A-bZRGWDbdyKeLTnwqnT7Q  # 試算表 ID
+  worksheet: 餘額                       # 工作表名稱（沒有會自動建立並加表頭）
+  account_name: ''                     # 本機帳號名；留空則用 OCR 讀桌內帳號名
+  upload_on_start: true                # 啟動先上傳一次
+update:
+  enabled: true                        # 自動更新總開關
+  manifest_url: https://raw.githubusercontent.com/zhang4347/start-follow/main/version.json
+  auto_apply: true                     # true=偵測到新版自動換檔重啟；false=只提示
+  check_on_start: true                 # 啟動時檢查
+  timeout_s: 8                         # 連線逾時秒數（離線時不卡太久）
+click_points:
+  menu_button:
+  - 1074
+  - 39
+  menu_chart:
+  - 1075
+  - 111
+  room_switch_button:
+  - 1158
+  - 37
+  room_list_scroll:
+  - 921
+  - 272
+  room_confirm_button:
+  - 511
+  - 497
+vision:
+  fast_ocr: true
+  ocr_scale: 1
+  header_use_paddle: false
+roi:
+  countdown:
+  - 577
+  - 33
+  - 125
+  - 120
+  menu_button:
+  - 1210
+  - 45
+  - 45
+  - 43
+  menu_panel:
+  - 1195
+  - 40
+  - 55
+  - 120
+  menu_stats_option:
+  - 1217
+  - 94
+  - 30
+  - 28
+  stats_panel:
+  - 118
+  - 86
+  - 1043
+  - 548
+  stats_table:
+  - 128
+  - 152
+  - 1010
+  - 318
+  stats_close:
+  - 1115
+  - 92
+  - 44
+  - 44
+  room_no_col:
+  - 612
+  - 150
+  - 97
+  - 334
+  room_current_table:
+  - 103
+  - 590
+  - 141
+  - 37
+  balance:
+  - 14
+  - 681
+  - 132
+  - 32
+  account_name:        # 桌內帳號名稱位置（餘額正上方），OCR 自動讀帳號用
+  - 14
+  - 655
+  - 150
+  - 24
+stats_layout:
+  header_band:
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.12
+  data_top: 0.155
+  data_bottom: 0.88
+  visible_rows: 7
+  label_col_frac: 0.11
+  detect_grid: true
+stats_scroll_row: 閒龍寶
+stats_scroll:
+  scroll_to_top_clicks: 2
+  scroll_down_rows: 2
+  delta_up: 120
+  delta_down: -120
+  wait_sec: 0.15
+chips:
+  '1000':
+  - 276
+  - 540
+  '5000':
+  - 405
+  - 543
+  '10000':
+  - 527
+  - 535
+  '50000':
+  - 645
+  - 546
+  '100000':
+  - 775
+  - 547
+  '500000':
+  - 886
+  - 548
+bet_areas:
+  閒:
+  - 230
+  - 337
+  莊:
+  - 1054
+  - 314
+  和:
+  - 650
+  - 405
+  閒對:
+  - 435
+  - 394
+  莊對:
+  - 824
+  - 394
+  幸運六:
+  - 637
+  - 224
+  閒龍寶:
+  - 431
+  - 234
+  莊龍寶:
+  - 827
+  - 224
+stats_rows:
+- 莊家
+- 閒家
+- 和局
+- 莊對子
+- 閒對子
+- 幸運六
+- 莊龍寶
+stats_to_bet:
+  莊家: 莊
+  閒家: 閒
+  和局: 和
+  莊對子: 莊對
+  閒對子: 閒對
+  幸運六: 幸運六
+  莊龍寶: 莊龍寶
+  閒龍寶: 閒龍寶
+chip_values:
+- 1000
+- 5000
+- 10000
+- 50000
+- 100000
+- 500000

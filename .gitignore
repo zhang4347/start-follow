@@ -1,0 +1,34 @@
+# ===== 機密：絕對不要上傳到公開 repo =====
+service_account.json
+*service_account*.json
+*.key
+*.pem
+credentials.json
+
+# ===== 打包 / 發佈產物 =====
+build/
+dist/
+release/
+*.spec.bak
+
+# ===== Python 虛擬環境與快取 =====
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+
+# ===== 執行期產生的紀錄 / 截圖 =====
+logs/
+star_follow/logs/
+round_*.json
+*.log
+balance_*.png
+account_name_*.png
+
+# ===== 編輯器 / 系統 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
