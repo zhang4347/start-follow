@@ -1,6 +1,6 @@
 {
-  "version": "1.0.1",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.0.1/StarFollow_1.0.1.zip",
-  "sha256": "5efe92ec7e81398d611c1b3d16daaeb3cf5094fc771e1a893a18716b58acddb7",
-  "notes": "換桌不跟莊/閒；對象只下莊/閒就直接換桌；黏桌跟到沒得跟才換；嚴格比對暱稱不再跟錯路人"
+  "version": "1.0.2",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.0.2/StarFollow_1.0.2.zip",
+  "sha256": "c672ebc6becc3bc4021ed3b11960947196ff43621048d5f6a1d71adb2d5f1354",
+  "notes": "修正打包缺 OpenSSL 導致 HTTPS 全壞（自動更新／餘額上傳失效）；換桌只跟特殊邊注、對象只下莊閒就換桌；嚴格比對暱稱"
 }
