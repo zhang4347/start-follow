@@ -98,6 +98,15 @@ def kick_popup_message_ocr(frame: np.ndarray, cfg: AppConfig) -> tuple[bool, str
     return False, ""
 
 
+def _kick_requires_ocr_only(frame: np.ndarray, cfg: AppConfig, win: object | None = None) -> bool:
+    """已在牌桌時，五局提示只用 OCR 關鍵字，避免視覺/模板誤點確定。"""
+    from star_follow.vision.game_detect import _looks_like_table_surface, is_qipai_hall_frame
+
+    if is_qipai_hall_frame(frame, cfg):
+        return True
+    return _looks_like_table_surface(frame, cfg)
+
+
 def is_kick_idle_popup(
     frame: np.ndarray,
     cfg: AppConfig,
@@ -108,10 +117,7 @@ def is_kick_idle_popup(
     hit, _text = kick_popup_message_ocr(frame, cfg)
     if hit:
         return True
-    from star_follow.vision.game_detect import is_qipai_hall_frame
-
-    # 棋牌大廳中央 UI 易觸發視覺/模板誤判，僅 OCR 關鍵字可判五局提示
-    if is_qipai_hall_frame(frame, cfg):
+    if _kick_requires_ocr_only(frame, cfg, win):
         return False
     x, y, bw, bh = _dialog_rect(frame, cfg)
     tpl = match_template_in_region(frame, _T_CONFIRM, (x, y, bw, bh), threshold=0.0)

@@ -1138,22 +1138,26 @@ class FollowEngine:
                 self._stay_return_to_table(win)
                 return True
         else:
-            ready, screen = lobby_nav.prepare_for_table_play(win, self.cfg, cap)
-            if not ready:
-                if screen != "table":
-                    if self._stay_paused:
-                        now = time.perf_counter()
-                        if now - self._last_stay_pause_log_mono >= 15.0:
-                            logger.info("追蹤對象已離桌，暫停中，不自動回桌（畫面=%s）", screen)
-                            self._last_stay_pause_log_mono = now
-                        return True
+            # 掛房 IDLE：節流大廳檢查，不每圈 prepare（避免誤點五局、拖慢 T 軸）
+            early, screen = self._engine_lobby_check(win, frame, cap)
+            if early:
+                return True
+            if screen != "table":
+                if self._stay_paused:
                     now = time.perf_counter()
-                    if now - self._last_lobby_log_mono >= 10.0:
-                        logger.info("掛房偵測到不在牌桌（%s），自動回桌…", screen)
-                        self._last_lobby_log_mono = now
-                    self._stay_return_to_table(win)
+                    if now - self._last_stay_pause_log_mono >= 15.0:
+                        logger.info("追蹤對象已離桌，暫停中，不自動回桌（畫面=%s）", screen)
+                        self._last_stay_pause_log_mono = now
+                    return True
+                now = time.perf_counter()
+                if now - self._last_lobby_log_mono >= 10.0:
+                    logger.info("掛房偵測到不在牌桌（%s），自動回桌…", screen)
+                    self._last_lobby_log_mono = now
+                self._stay_return_to_table(win)
                 return True
             self._cached_screen = "table"
+
+        frame = capture_client(win)
 
         if not self._win_logged:
             focus_window(win.hwnd)

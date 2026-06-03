@@ -173,6 +173,23 @@ def _sidebar_looks_like_qipai_hall(frame: np.ndarray, cfg: AppConfig) -> bool:
     return False
 
 
+def _looks_like_table_surface(frame: np.ndarray, cfg: AppConfig) -> bool:
+    """牌桌表面特徵（不經 is_kick_idle_popup，供五局 OCR 閘門用）。"""
+    sw_ok, _ = detect_room_switch_button(frame, cfg)
+    if sw_ok:
+        return True
+    cd_ok, _ = countdown_ocr_in_room(frame, cfg)
+    if cd_ok:
+        return True
+    if _has_countdown_area(frame, cfg) and _has_chip_bar(frame):
+        return True
+    from star_follow.vision.nav_scene import measure_table_menu_chart
+
+    if _has_chip_bar(frame) and measure_table_menu_chart(frame, cfg) >= 0.40:
+        return True
+    return False
+
+
 def is_qipai_hall_frame(frame: np.ndarray, cfg: AppConfig) -> bool:
     """棋牌大廳（含已滑動、可見遊戲卡片列）：底部籌碼列仍可能存在，不可當牌桌。"""
     sw_ok, _ = detect_room_switch_button(frame, cfg)

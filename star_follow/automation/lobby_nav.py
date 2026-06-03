@@ -650,7 +650,7 @@ def dismiss_popup_if_any(
 
     nc = _read_nav_cfg(cfg)
     if kick_click_on_cooldown():
-        return True
+        return False
     frame = capture_fn()
     if not is_kick_idle_popup(frame, cfg, win=win):
         return False

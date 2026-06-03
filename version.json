@@ -1,6 +1,6 @@
 {
-  "version": "1.2.4",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.4/StarFollow_1.2.4.zip",
-  "sha256": "eec2f73898b94b93995a5a73638677a273cff0611e08f92cf177f981eb4af907",
-  "notes": "修 NameError；棋牌大廳不再誤判牌桌；五局提示在棋牌畫面不再誤點"
+  "version": "1.2.5",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.5/StarFollow_1.2.5.zip",
+  "sha256": "dd8e997e7700254915a5cf685d82acc78e77f20f25e3ccf9dc59c57995449f79",
+  "notes": "掛房 IDLE 不再每圈 prepare；牌桌內五局提示僅 OCR；lobby 後重截圖讀 T"
 }
