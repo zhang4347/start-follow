@@ -174,7 +174,7 @@ class FollowEngine:
         """本局太晚不開流程；順便關掉可能殘留的統計表。"""
         if not self._late_skip_logged and t is not None:
             logger.info(
-                "本局 T=%s 太晚（需 T=%s～%s 且錨定成功），跳過本局，等下一局",
+                "本局 T=%s 已過開局窗（需 T=%s～%s 且錨定成功），跳過本局，等下一局",
                 t,
                 self._min_start_t(),
                 self.cfg.timing.open_stats_at_t,
@@ -1206,7 +1206,7 @@ class FollowEngine:
             if cd_color == CountdownColor.GREEN and t is not None:
                 if self._can_start_round(t, cd):
                     self._begin_round(t, frame=frame)
-                elif t < self._min_start_t() or t > timing.open_stats_at_t:
+                elif t > timing.open_stats_at_t:
                     self._skip_late_round(frame, t)
             else:
                 now = time.perf_counter()
