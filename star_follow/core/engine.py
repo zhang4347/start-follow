@@ -1641,7 +1641,7 @@ class FollowEngine:
             if now - self._last_lobby_log_mono >= 8.0:
                 logger.info("尚未就緒（%s），先回桌或關提示…", screen)
                 self._last_lobby_log_mono = now
-            if screen != PHASE_TABLE:
+            if screen != lobby_nav.PHASE_TABLE:
                 lobby_nav.return_to_baccarat_table(win, self.cfg, cap)
             return True
 
@@ -1659,7 +1659,8 @@ class FollowEngine:
                 self._patrol_current = cur
 
         if self._patrol_current is None:
-            logger.warning("已在牌桌但讀不到桌號，本輪不開統計")
+            logger.warning("尚未進入牌桌（無桌號），執行大廳導覽…")
+            lobby_nav.return_to_baccarat_table(win, self.cfg, cap)
             return True
 
         # 不管現在能不能下注，先開統計表看本桌有沒有追蹤對象：

@@ -155,7 +155,7 @@ def _read_valid_table_no(
 
 
 def _sidebar_looks_like_qipai_hall(frame: np.ndarray, cfg: AppConfig) -> bool:
-    """右側棋牌分頁明顯亮起（金/亮占比夠高），且非入口黃字畫面。"""
+    """右側棋牌分頁亮起，且非入口黃字畫面。"""
     if is_lobby(frame, cfg):
         return False
     h, w = frame.shape[:2]
@@ -163,9 +163,29 @@ def _sidebar_looks_like_qipai_hall(frame: np.ndarray, cfg: AppConfig) -> bool:
     ref_h = cfg.window.reference_height or 720
     tab_rect = scale_rect(list(_REF_QIPAI_TAB), ref_w, ref_h, w, h)
     tab, purple_r, highlight_r = qipai_sidebar_tab_state(frame, tab_rect)
-    if tab != "selected":
+    if tab == "selected":
+        if highlight_r >= 0.06 and purple_r < 0.20:
+            return True
+        from star_follow.vision.nav_scene import measure_card_row_score
+
+        if measure_card_row_score(frame, cfg) >= 0.30:
+            return True
+    return False
+
+
+def is_qipai_hall_frame(frame: np.ndarray, cfg: AppConfig) -> bool:
+    """棋牌大廳（含已滑動、可見遊戲卡片列）：底部籌碼列仍可能存在，不可當牌桌。"""
+    sw_ok, _ = detect_room_switch_button(frame, cfg)
+    if sw_ok:
         return False
-    return highlight_r >= 0.10 and purple_r < 0.16
+    from star_follow.vision.nav_scene import measure_card_row_score
+
+    card_row = measure_card_row_score(frame, cfg)
+    if card_row >= 0.38:
+        return True
+    if _sidebar_looks_like_qipai_hall(frame, cfg):
+        return True
+    return False
 
 
 def _table_hud_without_ocr(frame: np.ndarray, cfg: AppConfig) -> bool:
@@ -173,6 +193,8 @@ def _table_hud_without_ocr(frame: np.ndarray, cfg: AppConfig) -> bool:
     from star_follow.vision.kick_popup import is_kick_idle_popup
 
     if is_kick_idle_popup(frame, cfg):
+        return False
+    if is_qipai_hall_frame(frame, cfg):
         return False
     if not (_has_countdown_area(frame, cfg) and _has_chip_bar(frame)):
         return False
@@ -199,7 +221,7 @@ def detect_in_baccarat_room(
         meta["reason"] = "entry_yellow"
         return False, meta
 
-    # 先確認牌桌特徵；牌桌畫面右側常誤判「棋牌已選中」，不可先否決
+    # 強牌桌信號優先；棋牌大廳（含底部籌碼列）在這之後排除
     sw_ok, sw_meta = detect_room_switch_button(frame, cfg)
     if sw_ok:
         meta = {"method": "room_switch", **sw_meta}
@@ -214,6 +236,10 @@ def detect_in_baccarat_room(
     if table_no is not None:
         meta = {"method": "table_no_ocr", "table_no": table_no}
         return True, meta
+
+    if is_qipai_hall_frame(frame, cfg):
+        meta["reason"] = "qipai_hall"
+        return False, meta
 
     if _has_chip_bar(frame):
         from star_follow.vision.nav_scene import measure_table_menu_chart
@@ -234,10 +260,6 @@ def detect_in_baccarat_room(
         elif not _sidebar_looks_like_qipai_hall(frame, cfg):
             meta = {"method": "chip_bar"}
             return True, meta
-
-    if _sidebar_looks_like_qipai_hall(frame, cfg):
-        meta["reason"] = "qipai_hall"
-        return False, meta
 
     return False, meta
 

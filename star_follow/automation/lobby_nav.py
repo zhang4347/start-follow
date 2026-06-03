@@ -305,9 +305,14 @@ def classify_nav_screen(
             override_note = "五局提示窗→不算牌桌"
         in_ok = False
     elif in_ok and phase != PHASE_TABLE:
-        override_note = f"在房內覆寫：{phase}→table ({in_meta.get('method', '')})"
-        phase = PHASE_TABLE
-        confidence = 1.0
+        weak = in_meta.get("method") in ("chip_bar", "table_hud", "none")
+        if weak and phase in (PHASE_QIPAI_SCROLL, PHASE_QIPAI_READY, PHASE_ENTRY, PHASE_HOME):
+            override_note = f"弱在房({in_meta.get('method')})不覆寫→{phase}"
+            in_ok = False
+        else:
+            override_note = f"在房內覆寫：{phase}→table ({in_meta.get('method', '')})"
+            phase = PHASE_TABLE
+            confidence = 1.0
 
     reasons: list[str] = list(tree_reasons)
     if override_note:
@@ -499,8 +504,20 @@ def prepare_for_table_play(
 
     ok, meta = detect_in_baccarat_room(frame, cfg, win)
     if ok:
-        return True, PHASE_TABLE
+        method = str(meta.get("method", ""))
+        if method in ("room_switch", "countdown_ocr", "table_no_ocr"):
+            return True, PHASE_TABLE
+        from star_follow.automation.room_nav import read_current_table
+
+        if read_current_table(frame, cfg, win) is not None:
+            return True, PHASE_TABLE
+        logger.debug("在房信號偏弱(%s)且無桌號，改走大廳導覽", method)
     phase = screen_state_fast_for_engine(frame, cfg, win, capture_fn)
+    if phase == PHASE_TABLE:
+        from star_follow.automation.room_nav import read_current_table
+
+        if read_current_table(frame, cfg, win) is None:
+            phase = classify_nav_screen(frame, cfg, win, use_ocr=False).phase
     return phase == PHASE_TABLE, phase
 
 

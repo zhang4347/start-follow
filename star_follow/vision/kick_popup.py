@@ -108,6 +108,11 @@ def is_kick_idle_popup(
     hit, _text = kick_popup_message_ocr(frame, cfg)
     if hit:
         return True
+    from star_follow.vision.game_detect import is_qipai_hall_frame
+
+    # 棋牌大廳中央 UI 易觸發視覺/模板誤判，僅 OCR 關鍵字可判五局提示
+    if is_qipai_hall_frame(frame, cfg):
+        return False
     x, y, bw, bh = _dialog_rect(frame, cfg)
     tpl = match_template_in_region(frame, _T_CONFIRM, (x, y, bw, bh), threshold=0.0)
     if tpl and float(tpl[2]) >= _THR_TEMPLATE:

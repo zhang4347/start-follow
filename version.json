@@ -1,6 +1,6 @@
 {
-  "version": "1.2.3",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.3/StarFollow_1.2.3.zip",
-  "sha256": "a715d89643c0636ccc6377e827c89c02059fc472d7a54c92626e5c506a78ba48",
-  "notes": "五局提示最高優先且先點確定；僅籌碼列不算在房；巡房開統計前 prepare_for_table_play"
+  "version": "1.2.4",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.4/StarFollow_1.2.4.zip",
+  "sha256": "eec2f73898b94b93995a5a73638677a273cff0611e08f92cf177f981eb4af907",
+  "notes": "修 NameError；棋牌大廳不再誤判牌桌；五局提示在棋牌畫面不再誤點"
 }
