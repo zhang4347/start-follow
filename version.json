@@ -1,6 +1,6 @@
 {
-  "version": "1.1.3",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.1.3/StarFollow_1.1.3.zip",
-  "sha256": "52b3f730b800e65d888b8efda66579a506574f236330416880648907be474a36",
-  "notes": "換桌清單 OCR 改用全文+No.正則(取代純數字白名單)，並合併多種二值化救回灰掉的滿桌列：修正清單明明開著卻偵測為關(開桌號清單失敗)與漏讀單位數桌號；換房診斷圖改 PIL 存檔(修正中文路徑存不出來)"
+  "version": "1.1.4",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.1.4/StarFollow_1.1.4.zip",
+  "sha256": "382158599ca6fa28e126f580e79df06978ed2e1637b44604e5683c32d744ad9c",
+  "notes": "關表後改用真實OCR重判時間+馬上下注(修系統/遊戲時間漂移誤判沒時間)；統計表滑到底只截一張讀全部邊注(自動更新免改設定也生效)；被踢自動回桌(換桌任一桌/掛桌回指定桌號)；掛桌可設桌號+對象，對象全離桌暫停並TG通知；餘額帳號改手填+整點漏傳補傳"
 }
