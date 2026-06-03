@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 
 from star_follow.vision.state import CountdownColor, CountdownState
@@ -49,11 +50,20 @@ class CountdownTracker:
         if self._anchor_t is None or self._anchor_mono is None:
             return None
         elapsed = time.monotonic() - self._anchor_mono
-        return max(0, self._anchor_t - int(elapsed))
+        # ceil：軟體略偏快，避免比實際慢 1～2 秒以為還有時間
+        return max(0, self._anchor_t - math.ceil(elapsed))
+
+    def _resync_to(self, ocr_t: int, est: int) -> int:
+        if ocr_t != est:
+            logger.info("倒數校正 OCR=%s 軟體=%s", ocr_t, est)
+        self._anchor_t = ocr_t
+        self._anchor_mono = time.monotonic()
+        return ocr_t
 
     def effective(self, ocr: CountdownState) -> tuple[int | None, CountdownColor]:
         """
         錨定後在軟體 T>0 期間一律用本機倒數，不受 OCR 紅字／誤讀干擾。
+        OCR 讀到比軟體小 → 立刻採較小值（遊戲較快，防掛表後來不及下注）。
         T 歸零後才交還 OCR（封盤）。
         """
         if self._anchor_t is None:
@@ -65,12 +75,11 @@ class CountdownTracker:
 
         if est > 0:
             if ocr.color == CountdownColor.GREEN and ocr.seconds is not None:
-                diff = abs(ocr.seconds - est)
-                if diff > self.resync_tolerance and diff <= 4:
-                    logger.info("倒數校正 OCR=%s 軟體=%s", ocr.seconds, est)
-                    self._anchor_t = ocr.seconds
-                    self._anchor_mono = time.monotonic()
-                    est = ocr.seconds
+                diff = ocr.seconds - est
+                if diff < 0 and -diff <= 6:
+                    est = self._resync_to(ocr.seconds, est)
+                elif diff > self.resync_tolerance and diff <= 4:
+                    est = self._resync_to(ocr.seconds, est)
             elif ocr.color != CountdownColor.GREEN and ocr.seconds is not None:
                 if abs(ocr.seconds - est) > 5:
                     logger.debug(

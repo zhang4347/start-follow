@@ -1,6 +1,6 @@
 {
-  "version": "1.2.6",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.6/StarFollow_1.2.6.zip",
-  "sha256": "851f9b713780c0bc99b4e66491c7c06906672328dfd87a47306113da8f681b21",
-  "notes": "T<19 不再誤判跳過本局，僅 T>20 才 skip"
+  "version": "1.2.7",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.7/StarFollow_1.2.7.zip",
+  "sha256": "f787515e49f6cb2bd679706bcfab71595c0864ffbff848ad7c42fe8125781673",
+  "notes": "軟體倒數偏快+OCR較小立刻校正；局內定稿前重讀T"
 }

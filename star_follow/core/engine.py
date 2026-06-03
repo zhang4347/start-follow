@@ -618,6 +618,18 @@ class FollowEngine:
             return t, color
         return cd.seconds, cd.color
 
+    def _refresh_effective_countdown(self) -> tuple[int | None, CountdownColor, CountdownState]:
+        """局內關鍵決策前重讀倒數（軟體+OCR 合併）。"""
+        cd_ocr = self._read_countdown()
+        t, cd_color = self._effective_t(cd_ocr)
+        cd = CountdownState(
+            color=cd_color,
+            seconds=t,
+            confidence=cd_ocr.confidence,
+            status_text=cd_ocr.status_text,
+        )
+        return t, cd_color, cd
+
     def _cache_column_hints(self) -> None:
         for entry in self.follow.active_entries():
             col = self.ctx.resolved_columns.get(entry.name)
@@ -1224,6 +1236,7 @@ class FollowEngine:
                 return True
 
         if self.phase == Phase.BET_OPEN:
+            t, cd_color, cd = self._refresh_effective_countdown()
             if not self.ctx.ui_prepared:
                 self._prepare_round_ui(capture_client(self._win))
             if self._abort_round_if_too_late(frame, t):
@@ -1243,6 +1256,7 @@ class FollowEngine:
             return True
 
         if self.phase == Phase.STATS_READY:
+            t, cd_color, cd = self._refresh_effective_countdown()
             if self._abort_round_if_too_late(frame, t):
                 return True
             self._sync_stats_flags(frame)
