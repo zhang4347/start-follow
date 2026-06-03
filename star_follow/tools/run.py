@@ -37,7 +37,16 @@ def _read_launch_settings() -> dict:
     """
     from star_follow import paths
 
-    out: dict = {"mode": None, "live": None, "selftest": False, "balance_test": False, "list_windows": False}
+    out: dict = {
+        "mode": None,
+        "live": None,
+        "selftest": False,
+        "balance_test": False,
+        "list_windows": False,
+        "stay_table": None,
+        "stay_targets": [],
+        "account_name": None,
+    }
     p = paths.launch_settings_path()
     if not p.is_file():
         return out
@@ -83,7 +92,26 @@ def _read_launch_settings() -> dict:
                 out["live"] = True
             elif any(v in val for v in ("關", "閉", "否", "off", "false", "no", "0", "測試")):
                 out["live"] = False
+        elif any(k in key for k in ("桌號", "桌号", "桌", "table")):
+            import re as _re
+
+            m = _re.search(r"\d+", val)
+            if m:
+                out["stay_table"] = int(m.group())
+        elif any(k in key for k in ("對象", "对象", "跟注對象", "target")):
+            # 一行可填多個（用 , 、 ， 空白分隔），也可多行累加
+            parts = [p for p in _split_targets(val) if p]
+            out["stay_targets"].extend(parts)
+        elif any(k in key for k in ("帳號", "帐号", "帳戶", "account", "玩家")):
+            if val:
+                out["account_name"] = val
     return out
+
+
+def _split_targets(val: str) -> list[str]:
+    import re as _re
+
+    return [p.strip() for p in _re.split(r"[,，、;；\s]+", val) if p.strip()]
 
 
 def _balance_test() -> int:
@@ -296,6 +324,17 @@ def main() -> int:
     engine = FollowEngine(follow=fl, dry_run=not live)
     if mode_override:
         engine.cfg.room.mode = mode_override
+    # 掛房：套用啟動設定的「桌號 / 對象」
+    if settings.get("stay_table") is not None:
+        engine.cfg.room.stay_table = settings["stay_table"]
+    if settings.get("stay_targets"):
+        engine.cfg.room.stay_targets = list(settings["stay_targets"])
+    # 掛房且有指定對象 → 用指定對象覆寫跟注名單（不動 follow_list.json）
+    if engine.cfg.room.mode == "stay" and engine.cfg.room.stay_targets:
+        engine.follow = FollowList.from_names(engine.cfg.room.stay_targets)
+    # 餘額上傳用的帳號名：以啟動設定手動輸入為準（不用 OCR 讀名字，避免誤判）
+    if settings.get("account_name"):
+        engine.cfg.sheet.account_name = settings["account_name"]
     t = engine.cfg.timing
     mode = "LIVE（含下注）" if not engine.dry_run else "dry-run（開關統計+OCR，不下注）"
     room_mode = "換房巡房" if engine.cfg.room.mode == "patrol" else "掛房（單桌）"
@@ -316,6 +355,16 @@ def main() -> int:
             f"時間軸：T={t.open_stats_at_t} 開統計 -> T<={t.prefetch_at_t} 預定位 -> "
             f"T={t.finalize_at_t} 定稿（僅 T>={t.min_round_start_t} 且錨定成功才開局）"
         )
+        if engine.cfg.room.stay_table:
+            print(f"掛房固定桌號：No.{engine.cfg.room.stay_table}（被踢/當機會自動回此桌）")
+        else:
+            print("掛房未指定桌號（待在當前桌；回大廳時回任一桌）。可在啟動設定填『桌號=5』")
+        tgt = engine.cfg.room.stay_targets or fl.active()
+        print(f"掛房追蹤對象：{('、'.join(tgt) if tgt else '（無）')}")
+        if engine.cfg.room.stay_pause_when_targets_absent:
+            print(
+                f"對象全離桌偵測：連續 {engine.cfg.room.stay_absent_rounds_to_pause} 局都讀不到任何對象 → 暫停跟注、不回桌"
+            )
     if engine.dry_run:
         print("真下注：python -m star_follow.tools.run --live")
         print("標記籌碼：python -m star_follow.tools.mark_chips")

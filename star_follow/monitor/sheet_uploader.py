@@ -1,9 +1,11 @@
-"""每整點把本機帳號餘額上傳到 Google 試算表（集中統計用）。
+"""每個整點把本機帳號餘額上傳到 Google 試算表（集中統計用）。
 
 設計重點：
   - 跑在獨立背景執行緒，只「讀畫面」不點擊，完全不干擾下注流程。
-  - 上傳時間「對齊主機系統時鐘的整點」（例如 01:00、02:00…），不是倒數。
-  - 帳號名稱：優先用 config 的 sheet.account_name；留空才用 OCR 讀桌內帳號。
+  - 上傳對齊主機系統時鐘的整點，但「不必剛好在整點」：到了某整點若一時上傳不成
+    （在辨識別的東西／視窗沒開／OCR 讀不到），會每隔一小段時間補上傳，直到成功；
+    成功後該整點不再重複，等下一個整點。
+  - 帳號名稱：優先用 config 的 sheet.account_name（由啟動設定手動輸入）；留空才退而用 OCR。
   - 用服務帳戶金鑰（service_account.json）連 Google Sheets，免使用者登入。
 """
 
@@ -12,7 +14,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
+
+_RETRY_INTERVAL_S = 25.0  # 輪詢／補上傳間隔（秒）：越小越貼近整點、失敗補上傳越快
 
 import numpy as np
 from mss import mss
@@ -72,14 +76,8 @@ def read_account_name_once(cfg: AppConfig) -> str:
     return name
 
 
-def _seconds_to_next_hour() -> float:
-    now = datetime.now()
-    nxt = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-    return max(1.0, (nxt - now).total_seconds())
-
-
 class SheetUploader:
-    """背景執行緒：每整點讀餘額並上傳 Google 試算表。"""
+    """背景執行緒：每個整點讀餘額並上傳 Google 試算表（含補上傳）。"""
 
     def __init__(self, cfg: AppConfig) -> None:
         self.cfg = cfg
@@ -100,7 +98,7 @@ class SheetUploader:
             return
         self._thread = threading.Thread(target=self._run, name="SheetUploader", daemon=True)
         self._thread.start()
-        logger.info("餘額上傳已啟動：每整點上傳到 Google 試算表（%s）", self.sh.spreadsheet_id)
+        logger.info("餘額上傳已啟動：每個整點上傳到 Google 試算表（含補上傳，%s）", self.sh.spreadsheet_id)
 
     def stop(self) -> None:
         self._stop.set()
@@ -148,20 +146,23 @@ class SheetUploader:
             logger.info("OCR 讀到帳號名：%s", name)
         return name or "未知帳號"
 
-    def _upload_once(self) -> None:
+    def _upload_once(self) -> bool:
+        """讀餘額並上傳。成功回傳 True；讀不到餘額或上傳失敗回傳 False（之後會重試補上傳）。"""
         balance = read_balance_once(self.cfg)
         if balance <= 0:
-            logger.info("餘額上傳：暫時讀不到餘額（視窗未開或 OCR 失敗），跳過本次")
-            return
+            logger.info("餘額上傳：暫時讀不到餘額（視窗未開或 OCR 失敗），稍後重試")
+            return False
         account = self._resolve_account()
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
             ws = self._worksheet()
             action = self._upsert(ws, account, balance, ts)
             logger.info("餘額已上傳（%s）：帳號=%s 餘額=%s @ %s", action, account, f"{balance:,}", ts)
+            return True
         except Exception as exc:  # noqa: BLE001
-            logger.warning("餘額上傳失敗：%s（下次整點再試）", exc)
+            logger.warning("餘額上傳失敗：%s（稍後重試）", exc)
             self._ws = None  # 連線可能失效，下次重建
+            return False
 
     def _wait_window_ready(self, tries: int = 20) -> None:
         for _ in range(tries):
@@ -175,15 +176,34 @@ class SheetUploader:
             time.sleep(1.0)
 
     def _run(self) -> None:
+        """每個整點各上傳一次，但「不必剛好在整點」：
+
+        到了某個整點後，只要當下還沒上傳成功（可能剛好在辨識別的東西、或視窗沒開、
+        OCR 一時讀不到），就每隔一小段時間重試，直到該整點的餘額成功補上傳為止；
+        成功後該整點就不再重複上傳，等下一個整點。
+        """
+        uploaded_hour: datetime | None = None  # 已成功上傳的「整點」
+
         if self.sh.upload_on_start:
             self._wait_window_ready()
-            self._upload_once()
+            if self._upload_once():
+                uploaded_hour = self._current_hour()
+
         while not self._stop.is_set():
-            wait_s = _seconds_to_next_hour()
-            logger.info("下次餘額上傳於整點（約 %.0f 分鐘後）", wait_s / 60.0)
-            if self._stop.wait(wait_s):
-                return
             try:
-                self._upload_once()
+                cur_hour = self._current_hour()
+                if uploaded_hour != cur_hour:
+                    # 這個整點還沒成功上傳 → 嘗試（含補上傳：整點過了也照上）
+                    if self._upload_once():
+                        uploaded_hour = cur_hour
+                    else:
+                        logger.info("本整點（%s）尚未成功上傳，稍後重試", cur_hour.strftime("%H:%M"))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("餘額上傳迴圈例外：%s", exc)
+            # 短間隔輪詢：盡量貼近整點，且失敗時能很快補上傳
+            if self._stop.wait(_RETRY_INTERVAL_S):
+                return
+
+    @staticmethod
+    def _current_hour() -> datetime:
+        return datetime.now().replace(minute=0, second=0, microsecond=0)

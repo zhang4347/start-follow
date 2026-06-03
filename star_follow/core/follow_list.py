@@ -51,6 +51,18 @@ class FollowList:
         self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     @classmethod
+    def from_names(cls, names: list[str]) -> FollowList:
+        """用指定名單直接建立（掛房模式以啟動設定覆寫 follow_list 用）。"""
+        fl = cls()
+        seen: set[str] = set()
+        for n in names:
+            n = n.strip()
+            if n and n not in seen:
+                seen.add(n)
+                fl.entries.append(FollowEntry(name=n))
+        return fl
+
+    @classmethod
     def load(cls, path: Path | None = None) -> FollowList:
         path = path or DEFAULT_LIST_PATH
         fl = cls(path=path)

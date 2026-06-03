@@ -380,6 +380,7 @@ def parse_stats_table(
     only_columns: list[int] | None = None,
     follow_targets: list[tuple[str, int | None]] | None = None,
     known_columns: dict[str, int] | None = None,
+    rows_override: list[str] | None = None,
 ) -> StatsParseResult:
     t0 = time.perf_counter()
     ocr_mod.set_ocr_options(fast=cfg.vision.fast_ocr, scale=cfg.vision.ocr_scale)
@@ -388,7 +389,9 @@ def parse_stats_table(
     table, _ = extract_stats_table(frame, cfg)
 
     layout = cfg.raw.get("stats_layout", {})
-    rows = cfg.stats_rows or []
+    # rows_override：統計表「滑到最底」時，畫面可見列名與滑到頂不同（少了莊家、
+    # 多了最後一列），用這份對應表讀，一次截圖就抓到所有邊注。
+    rows = rows_override if rows_override is not None else (cfg.stats_rows or [])
 
     if follow_targets is not None and cfg.vision.fast_ocr:
         if known_columns:

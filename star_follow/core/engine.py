@@ -18,7 +18,6 @@ from star_follow.config import AppConfig, load_config
 from star_follow.core.countdown_tracker import CountdownTracker
 from star_follow.core.follow_list import FollowList
 from star_follow.core.risk import cap_plan
-from star_follow.vision.game_detect import is_baccarat_table, is_lobby
 from star_follow.vision.menu_match import menu_dropdown_open
 from star_follow.vision.panel import stats_table_visible
 from star_follow.vision.roi import scale_point, scale_rect
@@ -95,6 +94,10 @@ class FollowEngine:
         self._session_rounds = 0
         self._session_stake = 0
         self._stay_idle_rounds = 0  # 掛房：連續沒下注的局數（防踢用）
+        self._stay_absent_streak = 0  # 掛房：連續沒讀到任何指定對象的局數
+        self._stay_paused = False  # 掛房：對象全離桌 → 暫停跟注、不回桌
+        self._stay_pause_notified = False  # 已對「對象全離桌」發過 TG
+        self._last_stay_pause_log_mono = 0.0
         self._stopped_reason: str | None = None
         self._last_lobby_log_mono = 0.0
         self._last_idle_wait_log_mono = 0.0
@@ -528,6 +531,50 @@ class FollowEngine:
         )
         time.sleep(float(scroll_cfg.get("wait_sec", 0.15)))
 
+    def _bottom_read_enabled(self) -> bool:
+        """1b：開表後直接滑到最底、只截一張就讀完所有邊注（表頭固定、不看莊閒）。
+
+        預設開啟（程式內建），所以舊使用者自動更新後、即使 config.yaml 沒有新鍵也會
+        生效；要關閉才在 config.yaml 設 stats_scroll.read_at_bottom: false。
+        """
+        enabled = bool(self._scroll_cfg().get("read_at_bottom", True))
+        return enabled and bool(self._stats_rows_bottom())
+
+    def _stats_rows_bottom(self) -> list[str]:
+        """滑到最底時可見的列名。優先用 config 明列的 stats_rows_bottom；沒有就由現有
+        設定推導＝stats_rows 去掉最上面的莊家 + 最後一列 stats_scroll_row（閒龍寶），
+        這樣舊 config.yaml 不必新增任何鍵也能用。
+        """
+        explicit = self.cfg.raw.get("stats_rows_bottom")
+        if explicit:
+            return [str(x) for x in explicit]
+        rows = list(self.cfg.stats_rows or [])
+        scroll_row = self.cfg.raw.get("stats_scroll_row")
+        if len(rows) >= 2 and scroll_row:
+            return rows[1:] + [str(scroll_row)]
+        return []
+
+    def _scroll_stats_to_bottom(self) -> None:
+        """滑到最底並停住（資料列只有一頁多一點，多滑幾下會夾在最底）。"""
+        scroll_cfg = self._scroll_cfg()
+        clicks = int(scroll_cfg.get("scroll_to_bottom_clicks", 5))
+        if clicks <= 0:
+            return
+        assert self._win is not None
+        sx, sy = self._stats_scroll_point()
+        logger.info("統計表往下捲到底 %d 次 @(%d,%d)", clicks, sx, sy)
+        wheel_at_client(
+            self._win, sx, sy, clicks=clicks, delta=int(scroll_cfg.get("delta_down", -120))
+        )
+        time.sleep(float(scroll_cfg.get("wait_sec", 0.15)))
+
+    def _position_stats_for_read(self) -> None:
+        """讀統計表前先把捲動位置擺好：1b 開→滑到底；否則維持原本的滑到頂。"""
+        if self._bottom_read_enabled():
+            self._scroll_stats_to_bottom()
+        else:
+            self._scroll_stats_to_top()
+
     def _scroll_stats_down(self) -> None:
         scroll_cfg = self._scroll_cfg()
         if scroll_cfg.get("enabled") is False:
@@ -591,12 +638,15 @@ class FollowEngine:
         entries = self.follow.active_entries()
         targets = [(e.name, e.column_index) for e in entries]
         known = self.ctx.resolved_columns if refresh_only else None
+        bottom = self._bottom_read_enabled()
+        rows_override = self._stats_rows_bottom() if bottom else None
 
         result = parse_stats_table(
             frame,
             self.cfg,
             follow_targets=targets,
             known_columns=known,
+            rows_override=rows_override,
         )
         if result.elapsed_ms:
             kind = "刷新金額" if refresh_only else "表頭+欄位"
@@ -620,8 +670,9 @@ class FollowEngine:
                 bet_key = self.cfg.stats_to_bet.get(stats_name, stats_name)
                 plan[bet_key] = plan.get(bet_key, 0) + amount
 
+        # 1b 模式：已滑到底、單張截圖就含最後一列（閒龍寶），不需要再往下補讀。
         scroll_row = self.cfg.raw.get("stats_scroll_row")
-        if include_scroll and scroll_row and result.resolved_columns:
+        if include_scroll and not bottom and scroll_row and result.resolved_columns:
             assert self._win is not None
             self._scroll_stats_down()
             frame2 = capture_client(self._win)
@@ -716,7 +767,7 @@ class FollowEngine:
             self.ctx.stats_opened and self._panel_open(frame)
         ):
             if not self.ctx.stats_opened:
-                self._scroll_stats_to_top()
+                self._position_stats_for_read()
             self.ctx.stats_opened = True
             self.ctx.stats_closed = False
             if self.phase == Phase.BET_OPEN:
@@ -742,7 +793,7 @@ class FollowEngine:
                     )
                     self._save_debug_frame(check, "stats_not_confirmed")
                     return False
-                self._scroll_stats_to_top()
+                self._position_stats_for_read()
                 self.ctx.stats_opened = True
                 if self.phase == Phase.BET_OPEN:
                     self.phase = Phase.STATS_READY
@@ -805,6 +856,11 @@ class FollowEngine:
         win = self._win
         t0 = time.perf_counter()
 
+        # 1b：定稿讀數前確保停在最底（表頭固定，一張就含所有邊注），並重取畫面
+        if self._bottom_read_enabled():
+            self._scroll_stats_to_bottom()
+            frame = capture_client(win)
+
         refresh = bool(self.ctx.resolved_columns)
         self.ctx.plan = self._build_plan(
             frame,
@@ -813,6 +869,7 @@ class FollowEngine:
             ocr_t=t if self.cfg.timing.save_screenshot_on_ocr else None,
         )
         self.ctx.ocr_done = True
+        self._update_stay_presence()
 
         if self.cfg.timing.save_screenshot_on_ocr:
             self._save_screenshot(frame, t)
@@ -820,9 +877,10 @@ class FollowEngine:
         if not self._close_stats_panel(capture_client(win)):
             self._recover_ui(capture_client(win), "定稿後關表失敗")
 
-        t_bet, cd_color = self._effective_t()
+        # 關表後用真實 OCR 重判時間（不用會漂移的軟體時鐘），盡快下注
+        t_bet, cd_color = self._read_cd_real()
         elapsed = time.perf_counter() - t0
-        logger.info("定稿耗時 %.1f 秒，實際可下注 T=%s", elapsed, t_bet)
+        logger.info("定稿耗時 %.1f 秒，關表後真實倒數 T=%s（%s）", elapsed, t_bet, cd_color.name)
 
         if not self.ctx.plan:
             # 對象本局沒下「可跟的邊注」。累計沒下注局數，必要時自己補注防踢。
@@ -835,8 +893,8 @@ class FollowEngine:
 
         logger.info("跟注計畫: %s", self.ctx.plan)
 
-        if not self._can_bet_now(t_bet, cd_color):
-            logger.warning("已過可下注時間 T=%s（定稿前顯示 T=%s），跳過執行", t_bet, t)
+        if not self._bet_gate_after_close(t_bet, cd_color):
+            logger.warning("關表後讀不到倒數（多半已封盤/過場），跳過執行（定稿時 T=%s）", t)
             self._stay_idle_rounds += 1
             self._save_round(frame, t_bet, bet=False)
             self._enter_locked()
@@ -864,6 +922,81 @@ class FollowEngine:
         self._ui_fail_streak = 0
         self._enter_locked()
 
+    def _notify_targets_gone(self, text: str) -> None:
+        """固定掛桌：對象異動時用 Telegram 通知（背景執行緒，避免阻塞）。
+
+        只要設了 bot_token / chat_id 就會送（不受餘額回報 enabled 影響）。
+        """
+        tg = self.cfg.telegram
+        if not tg.bot_token or not tg.chat_id:
+            return
+        import threading
+
+        from star_follow.notify.telegram import send_message
+
+        threading.Thread(
+            target=send_message,
+            args=(tg.bot_token, tg.chat_id, text),
+            daemon=True,
+        ).start()
+
+    def _stay_return_to_table(self, win) -> bool:
+        """掛房被踢回大廳：自動導覽回任一百家樂桌；若有指定桌號，再切到該桌號。"""
+        from star_follow.automation import lobby_nav
+        from star_follow.automation.room_nav import read_current_table, switch_to_table
+
+        ok = lobby_nav.return_to_baccarat_table(win, self.cfg, lambda: capture_client(win))
+        if not ok:
+            logger.warning("自動回桌失敗（暫時導覽不到牌桌），稍後重試")
+            return False
+        target = self.cfg.room.stay_table
+        if target:
+            # 隨機進桌後不一定是指定桌號，讀目前桌號；不符就切過去
+            cur = read_current_table(capture_client(win), self.cfg, win)
+            if cur != target:
+                logger.info("回到 No.%s，需切換到指定桌號 No.%s", cur, target)
+                if switch_to_table(win, self.cfg, target, capture_fn=lambda: capture_client(win)):
+                    logger.info("已切換回指定桌號 No.%s", target)
+                else:
+                    logger.warning("切換到指定桌號 No.%s 失敗，下一輪重試", target)
+                    return False
+            else:
+                logger.info("回到的就是指定桌號 No.%s", target)
+        # 重置局狀態，下一輪正常跑
+        self.phase = Phase.IDLE
+        self.ctx = RoundContext()
+        self._cd_tracker.reset()
+        self._stay_idle_rounds = 0
+        logger.info("掛房已回到牌桌，恢復跟注")
+        return True
+
+    def _update_stay_presence(self) -> None:
+        """掛房：依本局是否讀到任何指定對象，更新「對象全離桌→暫停」狀態。"""
+        if self.cfg.room.mode != "stay" or not self.cfg.room.stay_pause_when_targets_absent:
+            return
+        present = len(self.ctx.resolved_columns) > 0
+        table_tag = f"No.{self.cfg.room.stay_table}" if self.cfg.room.stay_table else "本桌"
+        if present:
+            if self._stay_paused:
+                logger.info("追蹤對象回到%s，解除暫停，恢復跟注", table_tag)
+                self._notify_targets_gone(f"追蹤對象已回到 {table_tag}，恢復跟注")
+            self._stay_absent_streak = 0
+            self._stay_paused = False
+            self._stay_pause_notified = False
+            return
+        self._stay_absent_streak += 1
+        need = max(1, self.cfg.room.stay_absent_rounds_to_pause)
+        if self._stay_absent_streak >= need and not self._stay_paused:
+            self._stay_paused = True
+            logger.warning(
+                "連續 %d 局都沒有任何指定對象在%s → 暫停跟注（不防踢、被踢也不自動回桌）",
+                self._stay_absent_streak,
+                table_tag,
+            )
+            if not self._stay_pause_notified:
+                self._stay_pause_notified = True
+                self._notify_targets_gone(f"{table_tag} 已無任何追蹤對象，暫停跟注")
+
     def _maybe_anti_kick(self, frame, t_bet: int | None, cd_color: CountdownColor) -> bool:
         """掛房防踢：連續多局沒下注時，自己補一手最小注（莊/閒）避免被系統踢出。
 
@@ -871,6 +1004,9 @@ class FollowEngine:
         """
         bcfg = self.cfg.betting
         if not bcfg.anti_kick_enabled:
+            return False
+        if self._stay_paused:
+            # 對象全離桌：不補注，讓它自然被踢（被踢也不會自動回桌）
             return False
         if self._stay_idle_rounds < bcfg.anti_kick_idle_rounds:
             return False
@@ -916,20 +1052,27 @@ class FollowEngine:
         self._win = win
         frame = capture_client(win)
 
-        if is_lobby(frame) and not is_baccarat_table(frame, self.cfg):
+        from star_follow.automation import lobby_nav
+
+        screen = lobby_nav.screen_state_fast(frame, self.cfg, win)
+        if screen != "table":
             if self.phase != Phase.IDLE:
                 self.phase = Phase.IDLE
                 self.ctx = RoundContext()
                 self._cd_tracker.reset()
                 self._last_logged_t = None
+            # 對象全離桌而暫停中：不自動回桌（讓它待在大廳，不再進房）
+            if self._stay_paused:
+                now = time.perf_counter()
+                if now - self._last_stay_pause_log_mono >= 15.0:
+                    logger.info("追蹤對象已離桌，暫停中，不自動回桌（畫面=%s）", screen)
+                    self._last_stay_pause_log_mono = now
+                return True
             now = time.perf_counter()
             if now - self._last_lobby_log_mono >= 10.0:
-                logger.info(
-                    "目前在大廳／非牌桌畫面，請點進百家樂桌（視窗 %dx%d）",
-                    win.client_width,
-                    win.client_height,
-                )
+                logger.info("掛房偵測到不在牌桌（%s），自動回桌…", screen)
                 self._last_lobby_log_mono = now
+            self._stay_return_to_table(win)
             return True
 
         if not self._win_logged:
@@ -1034,7 +1177,7 @@ class FollowEngine:
                 self.ctx.recovery_open_tried = True
                 logger.warning("統計表仍未開啟 T=%s，嘗試恢復開啟", t)
                 if self._open_stats_menu():
-                    self._scroll_stats_to_top()
+                    self._position_stats_for_read()
                     self.ctx.stats_opened = True
                     panel_now = True
 
@@ -1127,6 +1270,26 @@ class FollowEngine:
             time.sleep(interval)
         return None, color
 
+    def _read_cd_real(self, tries: int = 6, interval: float = 0.1) -> tuple[int | None, CountdownColor]:
+        """關表後用『真實 OCR』重判倒數（刻意不走軟體時鐘，避免長時間蓋住倒數造成的
+        系統時間 vs 遊戲時間漂移，害得明明還有時間卻被判成沒時間下注）。"""
+        assert self._win is not None
+        color = CountdownColor.OTHER
+        for _ in range(tries):
+            cd = self._read_cd(capture_client(self._win))
+            if cd.seconds is not None:
+                return cd.seconds, cd.color
+            color = cd.color
+            time.sleep(interval)
+        return None, color
+
+    def _bet_gate_after_close(self, t: int | None, color: CountdownColor) -> bool:
+        """關表後是否還能下注（寬鬆）：只要還讀得到倒數（>=1 秒）就下，盡快下；
+        只有完全讀不到倒數（多半在過場/開牌）或已歸零才放棄。"""
+        if t is None:
+            return False
+        return t >= 1
+
     def _patrol_next_target(self, cur: int | None) -> int | None:
         seq = sorted(self.cfg.room.tables)
         if not seq:
@@ -1186,7 +1349,7 @@ class FollowEngine:
             logger.info("本桌開統計失敗")
             self._force_close_stats(capture_client(win), reason="巡房開統計失敗")
             return (False, {})
-        self._scroll_stats_to_top()
+        self._position_stats_for_read()
         self.ctx = RoundContext()
         frame = capture_client(win)
         plan = self._build_plan(frame, refresh_only=False, include_scroll=True)
@@ -1252,7 +1415,7 @@ class FollowEngine:
                 if not self._open_stats_menu():
                     self._force_close_stats(capture_client(win), reason="巡房開統計失敗")
                     return "timeout"
-                self._scroll_stats_to_top()
+                self._position_stats_for_read()
                 opened = True
                 # 預定位：完整讀一次解析欄位（與進桌偵測同法，比只讀表頭可靠），確認對象在
                 self._build_plan(capture_client(win), refresh_only=False, include_scroll=True)
@@ -1266,15 +1429,15 @@ class FollowEngine:
             # 已開表：改用軟體時鐘推算 T（統計表蓋住倒數，無法直接 OCR）
             t_now = max(0, anchor_t - int(time.monotonic() - anchor_mono))
             if t_now <= rcfg.patrol_finalize_at_t:
-                self._scroll_stats_to_top()
+                self._position_stats_for_read()
                 frame = capture_client(win)
                 plan = self._build_plan(frame, refresh_only=True, include_scroll=True)
                 present = bool(self.ctx.resolved_columns)
                 raw_areas = set(self.ctx.last_raw_bet_areas)
                 if not self._close_stats_panel(capture_client(win)):
                     self._force_close_stats(capture_client(win), reason="巡房定稿關表")
-                # 關表後倒數露出來，用「真實 T」當下注安全閘（時鐘僅用來決定何時讀）
-                t_bet, cd_color = self._read_cd_stable()
+                # 關表後倒數露出來，用「真實 OCR」當下注安全閘（軟體時鐘只用來決定何時讀）
+                t_bet, cd_color = self._read_cd_real()
                 logger.info(
                     "No.%s 定稿讀取 present=%s 可跟=%s 原始區=%s（T=%s）",
                     cur, present, plan, raw_areas, t_bet,
@@ -1287,9 +1450,9 @@ class FollowEngine:
                         return "main_only"
                     # 完全沒讀到下注（對象本局沒下 或 OCR 漏讀）→ 交由容忍機制。
                     return "no_bet"
-                logger.info("No.%s 定稿跟注 %s（T=%s）", cur, plan, t_bet)
-                if t_bet is not None and not self._can_bet_now(t_bet, cd_color):
-                    logger.info("讀完已過可下注時間 T=%s，放棄本局", t_bet)
+                logger.info("No.%s 定稿跟注 %s（關表後真實 T=%s %s）", cur, plan, t_bet, cd_color.name)
+                if not self._bet_gate_after_close(t_bet, cd_color):
+                    logger.info("關表後讀不到倒數（多半已封盤/過場），放棄本局")
                     return "no_bet"
                 if not self._safety_allows_bet(plan):
                     return "no_bet"
@@ -1389,11 +1552,24 @@ class FollowEngine:
         self._win = win
         frame = capture_client(win)
 
-        if is_lobby(frame) and not is_baccarat_table(frame, self.cfg):
+        # 用大廳/入口專屬模板判斷現在到底在哪（is_baccarat_table 會被大廳底部彩色卡片
+        # 列誤判成牌桌，所以這裡改用 lobby_nav.detect_screen）。
+        from star_follow.automation import lobby_nav
+
+        screen = lobby_nav.screen_state_fast(frame, self.cfg, win)
+        if screen != "table":
             now = time.perf_counter()
             if now - self._last_lobby_log_mono >= 10.0:
-                logger.info("目前在大廳／非牌桌，請先進任一百家樂桌再啟動巡房")
+                logger.info("偵測到不在牌桌（%s），自動導覽回任一百家樂桌…", screen)
                 self._last_lobby_log_mono = now
+            ok = lobby_nav.return_to_baccarat_table(win, self.cfg, lambda: capture_client(win))
+            if ok:
+                # 回到新桌：重置目前桌號與巡房狀態，下一輪重新讀桌
+                self._patrol_current = None
+                self.phase = Phase.IDLE
+                self.ctx = RoundContext()
+                self._cd_tracker.reset()
+                logger.info("已自動回到百家樂桌，繼續巡房")
             return True
 
         if not self._win_logged:

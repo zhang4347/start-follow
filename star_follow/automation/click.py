@@ -172,6 +172,41 @@ def wheel_at_client(
         logger.warning("滾輪失敗 (%d,%d): %s", x, y, exc)
 
 
+def drag_client(
+    win: GameWindow,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    *,
+    steps: int = 16,
+    hold_ms: int = 60,
+) -> None:
+    """在 client 座標按住左鍵從 (x0,y0) 拖到 (x1,y1)（大廳橫向滑動換頁用）。
+
+    用實體滑鼠（win32），分段移動模擬人手拖曳；遊戲對瞬間跳點的拖曳常不認。
+    """
+    win = refresh_game_window(win.hwnd, win.title)
+    focus_window(win.hwnd)
+    sx0, sy0 = screen_point_from_client(win, x0, y0)
+    sx1, sy1 = screen_point_from_client(win, x1, y1)
+    import win32api
+    import win32con
+
+    set_cursor_pos(sx0, sy0)
+    time.sleep(0.08)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(hold_ms / 1000.0)
+    for i in range(1, steps + 1):
+        ix = int(sx0 + (sx1 - sx0) * i / steps)
+        iy = int(sy0 + (sy1 - sy0) * i / steps)
+        set_cursor_pos(ix, iy)
+        time.sleep(0.012)
+    time.sleep(0.05)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    time.sleep(0.15)
+
+
 def move_to_client(win: GameWindow, x: int, y: int) -> tuple[int, int]:
     win = refresh_game_window(win.hwnd, win.title)
     focus_window(win.hwnd)

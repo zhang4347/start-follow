@@ -102,6 +102,15 @@ class RoomConfig:
     # 黏桌：連續幾局沒跟到邊注（含 OCR 暫時漏讀）才換桌。設 >1 可容忍偶發漏讀，
     # 避免對象其實還在下、卻因一次讀失敗就提早換桌。
     patrol_leave_after_idle: int = 2
+    # 掛房（stay）專用：指定要固定待著的桌號。被踢/當機回大廳時，會自動回到這一桌。
+    # 0 = 不指定（待在當前桌，回大廳時回任一桌）。
+    stay_table: int = 0
+    # 掛房指定追蹤對象（覆寫 follow_list.json）。空 = 沿用 follow_list.json。
+    stay_targets: list[str] = field(default_factory=list)
+    # 掛房：當「指定對象全部都不在這桌」時，暫停跟注（不防踢補注、被踢也不自動回桌）。
+    stay_pause_when_targets_absent: bool = True
+    # 連續這麼多局都讀不到任何指定對象，才判定「對象全離桌」並暫停（容忍偶發漏讀）。
+    stay_absent_rounds_to_pause: int = 3
 
 
 @dataclass
@@ -117,13 +126,20 @@ class BettingConfig:
     anti_kick_amount: int = 0         # 補注金額，0=用最小籌碼
 
 
+# 內建 Telegram 通知預設：放在「程式碼」裡，才會被打包進 exe，並隨自動更新送到
+# 每一台（含自動更新者——他們的 config.yaml 會被保留、拿不到新 token，所以不能只放
+# config.yaml）。config.yaml 的 bot_token/chat_id 留空就用這組；要換 bot 改這裡即可。
+DEFAULT_BOT_TOKEN = "8893028334:AAGNJQt5djgMjjmCswxfwTUdh2h7VdvoXMM"
+DEFAULT_CHAT_ID = "-5153638599"
+
+
 @dataclass
 class TelegramConfig:
-    """Telegram 機器人定時回報帳號餘額。"""
+    """Telegram 機器人通知（掛桌對象全離桌等）。"""
 
     enabled: bool = False
-    bot_token: str = ""  # 找 @BotFather 建 bot 取得
-    chat_id: str = ""    # 你的聊天室/個人 chat id
+    bot_token: str = DEFAULT_BOT_TOKEN  # 找 @BotFather 建 bot 取得；留空用內建預設
+    chat_id: str = DEFAULT_CHAT_ID      # 你的聊天室/個人 chat id；留空用內建預設
     interval_min: float = 30.0  # 每隔幾分鐘回報一次
     report_on_start: bool = True  # 啟動後先報一次（建立基準）
 
@@ -277,6 +293,10 @@ def load_config(path: Path | str | None = None) -> AppConfig:
             patrol_ocr_at_t=int(rm.get("patrol_ocr_at_t", 11)),
             patrol_ocr_retry_at_t=int(rm.get("patrol_ocr_retry_at_t", 9)),
             patrol_leave_after_idle=int(rm.get("patrol_leave_after_idle", 2)),
+            stay_table=int(rm.get("stay_table", 0) or 0),
+            stay_targets=[str(x) for x in (rm.get("stay_targets") or [])],
+            stay_pause_when_targets_absent=bool(rm.get("stay_pause_when_targets_absent", True)),
+            stay_absent_rounds_to_pause=int(rm.get("stay_absent_rounds_to_pause", 3)),
         ),
         betting=BettingConfig(
             follow_exclude=[str(x) for x in (bt.get("follow_exclude") or ["莊", "閒"])],
@@ -287,8 +307,8 @@ def load_config(path: Path | str | None = None) -> AppConfig:
         ),
         telegram=TelegramConfig(
             enabled=bool(tg.get("enabled", False)),
-            bot_token=str(tg.get("bot_token", "")),
-            chat_id=str(tg.get("chat_id", "")),
+            bot_token=str(tg.get("bot_token") or DEFAULT_BOT_TOKEN),
+            chat_id=str(tg.get("chat_id") or DEFAULT_CHAT_ID),
             interval_min=float(tg.get("interval_min", 30.0)),
             report_on_start=bool(tg.get("report_on_start", True)),
         ),
@@ -398,6 +418,10 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
         "patrol_ocr_at_t": cfg.room.patrol_ocr_at_t,
         "patrol_ocr_retry_at_t": cfg.room.patrol_ocr_retry_at_t,
         "patrol_leave_after_idle": cfg.room.patrol_leave_after_idle,
+        "stay_table": cfg.room.stay_table,
+        "stay_targets": cfg.room.stay_targets,
+        "stay_pause_when_targets_absent": cfg.room.stay_pause_when_targets_absent,
+        "stay_absent_rounds_to_pause": cfg.room.stay_absent_rounds_to_pause,
     }
     data["betting"] = {
         "follow_exclude": cfg.betting.follow_exclude,

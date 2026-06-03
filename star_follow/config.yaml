@@ -89,9 +89,9 @@ betting:
   anti_kick_side: 閒          # 補注下哪一邊（莊/閒）
   anti_kick_amount: 0         # 0 = 用最小籌碼
 telegram:
-  enabled: false          # 已停用，改用下方 sheet 上傳
-  bot_token: ''
-  chat_id: ''
+  enabled: false          # 餘額定時回報已停用，改用下方 sheet 上傳
+  bot_token: ''  # 留空＝用程式內建的 bot（掛桌對象全離桌通知）；要換 bot 才填
+  chat_id: ''    # 留空＝用程式內建的 chat id；要改才填
   interval_min: 30
   report_on_start: true
 sheet:
@@ -201,6 +201,18 @@ stats_scroll:
   delta_up: 120
   delta_down: -120
   wait_sec: 0.15
+  # 1b：開表後直接滑到最底、只截一張就讀完所有邊注（表頭固定、莊閒不跟所以不用看）。
+  read_at_bottom: true
+  scroll_to_bottom_clicks: 5
+# 滑到最底時「可見的 7 列」對應的列名（少了最上面的莊家，多了最後的閒龍寶）。
+stats_rows_bottom:
+- 閒家
+- 和局
+- 莊對子
+- 閒對子
+- 幸運六
+- 莊龍寶
+- 閒龍寶
 chips:
   '1000':
   - 276
