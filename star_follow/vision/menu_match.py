@@ -100,7 +100,13 @@ def match_template_in_region(
     search_rect: tuple[int, int, int, int],
     *,
     threshold: float = 0.55,
+    base_scale: float = 1.0,
 ) -> tuple[int, int, float] | None:
+    """在 search_rect 內多尺度比對模板。
+
+    base_scale：模板是以參考解析度（1280×720）擷取的；若實際視窗較大/較小，傳入
+    實際/參考的比例（例如 0.8），讓模板先依視窗縮放，再做 ±微調，避免不同解析度比不中。
+    """
     tpl = _load_template(template_name)
     if tpl is None or tpl.size == 0:
         return None
@@ -109,15 +115,15 @@ def match_template_in_region(
         return None
     hay = frame[sy : sy + sh, sx : sx + sw]
     th, tw = tpl.shape[:2]
-    if hay.shape[0] < th or hay.shape[1] < tw:
-        return None
 
     best: tuple[int, int, float] | None = None
-    for scale in (1.0, 0.85, 1.15, 0.7, 1.3):
-        tpl_s = tpl
-        if scale != 1.0:
-            nw, nh = max(8, int(tw * scale)), max(8, int(th * scale))
-            tpl_s = cv2.resize(tpl, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    for rel in (1.0, 0.85, 1.15, 0.7, 1.3):
+        scale = base_scale * rel
+        nw, nh = max(8, int(tw * scale)), max(8, int(th * scale))
+        tpl_s = (
+            tpl if (nw == tw and nh == th)
+            else cv2.resize(tpl, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        )
         ths, tws = tpl_s.shape[:2]
         if hay.shape[0] < ths or hay.shape[1] < tws:
             continue

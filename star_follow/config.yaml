@@ -1,8 +1,6 @@
 window:
   title_substring: 星城Online
-  # 若仍找不到視窗，可在此加實際標題列上的字，例如：
-  # title_aliases:
-  # - 星城
+  title_aliases: []
   reference_width: 1280
   reference_height: 720
 timing:
@@ -11,7 +9,7 @@ timing:
   open_stats_latest_t: 15
   min_round_start_t: 19
   prefetch_at_t: 15
-  finalize_at_t: 6          # 掛房定稿時間（越小越晚下注，越能避免對方下了又收）
+  finalize_at_t: 6
   ocr_at_t: 5
   ocr_retry_at_t: 4
   min_bet_t: 2
@@ -62,7 +60,6 @@ room:
   - 16
   - 17
   - 19
-  # 換房：下注窗口剩 >= min_enter_t 秒才值得開表跟（不足就等下一窗）。
   min_enter_t: 8
   goto_x: 1147
   switch_confirm_s: 1.6
@@ -70,43 +67,41 @@ room:
   result_retry_s: 3.0
   scroll_clicks: 1
   max_scroll_pages: 14
-  # 換房定稿時點：提早開表後，撐到「剩 patrol_finalize_at_t 秒」才讀最終金額並跟注
-  # （與掛房一致，盡量跟到對象最後的注）。讀數約需 2~3 秒，故實際下注落在更後面。
   patrol_finalize_at_t: 6
-  patrol_ocr_at_t: 11      # 保留（目前換房未用）
-  patrol_ocr_retry_at_t: 9 # 保留（目前換房未用）
-  # 黏桌：連續幾局都沒跟到邊注才換桌。設 2 可容忍偶發 OCR 漏讀，避免對象還在下
-  # 卻因一次讀失敗就提早換桌（對象真的停手最多多看 1 局就換）。
+  patrol_ocr_at_t: 11
+  patrol_ocr_retry_at_t: 9
   patrol_leave_after_idle: 2
+  stay_table: 0
+  stay_targets: []
+  stay_pause_when_targets_absent: true
+  stay_absent_rounds_to_pause: 3
 betting:
-  # 兩模式都「不跟」這些下注區（莊、閒）。
   follow_exclude:
   - 莊
   - 閒
-  # 掛房防踢：連續 N 局我方都沒下注，就自己補一手最小注避免被踢。
   anti_kick_enabled: true
-  anti_kick_idle_rounds: 5   # 連續幾局沒下注就補注（第 5 局補）
-  anti_kick_side: 閒          # 補注下哪一邊（莊/閒）
-  anti_kick_amount: 0         # 0 = 用最小籌碼
+  anti_kick_idle_rounds: 5
+  anti_kick_side: 閒
+  anti_kick_amount: 0
 telegram:
-  enabled: false          # 餘額定時回報已停用，改用下方 sheet 上傳
-  bot_token: ''  # 留空＝用程式內建的 bot（掛桌對象全離桌通知）；要換 bot 才填
-  chat_id: ''    # 留空＝用程式內建的 chat id；要改才填
-  interval_min: 30
+  enabled: false
+  bot_token: 8893028334:AAGNJQt5djgMjjmCswxfwTUdh2h7VdvoXMM
+  chat_id: '-5153638599'
+  interval_min: 30.0
   report_on_start: true
 sheet:
-  enabled: true                        # 改 true 才會每整點上傳餘額
-  service_account_file: service_account.json  # 服務帳戶金鑰檔（放 exe 旁）
-  spreadsheet_id: 1cE3B-Uk0ST3Uj9YNKAP_7A-bZRGWDbdyKeLTnwqnT7Q  # 試算表 ID
-  worksheet: 餘額                       # 工作表名稱（沒有會自動建立並加表頭）
-  account_name: ''                     # 本機帳號名；留空則用 OCR 讀桌內帳號名
-  upload_on_start: true                # 啟動先上傳一次
+  enabled: true
+  service_account_file: service_account.json
+  spreadsheet_id: 1cE3B-Uk0ST3Uj9YNKAP_7A-bZRGWDbdyKeLTnwqnT7Q
+  worksheet: 餘額
+  account_name: ''
+  upload_on_start: true
 update:
-  enabled: true                        # 自動更新總開關
+  enabled: true
   manifest_url: https://raw.githubusercontent.com/zhang4347/start-follow/main/version.json
-  auto_apply: true                     # true=偵測到新版自動換檔重啟；false=只提示
-  check_on_start: true                 # 啟動時檢查
-  timeout_s: 8                         # 連線逾時秒數（離線時不卡太久）
+  auto_apply: true
+  check_on_start: true
+  timeout_s: 8.0
 click_points:
   menu_button:
   - 1074
@@ -123,6 +118,9 @@ click_points:
   room_confirm_button:
   - 511
   - 497
+  kick_idle_confirm:
+  - 640
+  - 510
 vision:
   fast_ocr: true
   ocr_scale: 1
@@ -178,7 +176,7 @@ roi:
   - 681
   - 132
   - 32
-  account_name:        # 桌內帳號名稱位置（餘額正上方），OCR 自動讀帳號用
+  account_name:
   - 14
   - 655
   - 150
@@ -201,10 +199,8 @@ stats_scroll:
   delta_up: 120
   delta_down: -120
   wait_sec: 0.15
-  # 1b：開表後直接滑到最底、只截一張就讀完所有邊注（表頭固定、莊閒不跟所以不用看）。
   read_at_bottom: true
   scroll_to_bottom_clicks: 5
-# 滑到最底時「可見的 7 列」對應的列名（少了最上面的莊家，多了最後的閒龍寶）。
 stats_rows_bottom:
 - 閒家
 - 和局
@@ -281,3 +277,13 @@ chip_values:
 - 50000
 - 100000
 - 500000
+nav_confirm:
+  samples: 3
+  gap_s: 0.12
+  min_agree: 2
+  min_confidence: 0.5
+  use_ocr: true
+  enter_table_wait_s: 28
+  enter_table_poll_s: 0.35
+  not_table_grace_s: 10
+  not_table_poll_s: 0.4

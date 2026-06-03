@@ -1,6 +1,6 @@
 {
-  "version": "1.1.4",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.1.4/StarFollow_1.1.4.zip",
-  "sha256": "382158599ca6fa28e126f580e79df06978ed2e1637b44604e5683c32d744ad9c",
-  "notes": "關表後改用真實OCR重判時間+馬上下注(修系統/遊戲時間漂移誤判沒時間)；統計表滑到底只截一張讀全部邊注(自動更新免改設定也生效)；被踢自動回桌(換桌任一桌/掛桌回指定桌號)；掛桌可設桌號+對象，對象全離桌暫停並TG通知；餘額帳號改手填+整點漏傳補傳"
+  "version": "1.1.6",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.1.6/StarFollow_1.1.6.zip",
+  "sha256": "e00b31b5d5142449405ec0866ce95cf89be4a35fdf34f38c17dbd89f6a8d0fff",
+  "notes": "大廳回桌辨識重做：首頁/棋牌/入口/牌桌五段分清楚，不再一啟動就判已在牌桌；進桌後等倒數/桌號/籌碼確認在房內，局間短等避免誤滑棋牌大廳；五局未押注提示自動點確定(支援 kick_idle_confirm 標點)；大廳模板從標記圖重新裁切"
 }

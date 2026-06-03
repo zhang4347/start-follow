@@ -43,6 +43,7 @@ def _read_launch_settings() -> dict:
         "selftest": False,
         "balance_test": False,
         "list_windows": False,
+        "nav_test": False,
         "stay_table": None,
         "stay_targets": [],
         "account_name": None,
@@ -81,6 +82,8 @@ def _read_launch_settings() -> dict:
                 out["mode"] = "patrol"
             elif any(v in val for v in ("掛房", "單桌", "stay")):
                 out["mode"] = "stay"
+            elif any(v in val for v in ("回桌", "導覽", "辨識", "回桌診斷", "navtest", "nav")):
+                out["nav_test"] = True
             elif any(v in val for v in ("視窗", "視窗診斷", "list-windows", "windows")):
                 out["list_windows"] = True
             elif any(v in val for v in ("餘額測試", "餘額", "balance")):
@@ -112,6 +115,88 @@ def _split_targets(val: str) -> list[str]:
     import re as _re
 
     return [p.strip() for p in _re.split(r"[,，、;；\s]+", val) if p.strip()]
+
+
+# 「啟動設定.txt」每個選項的別名（判斷舊檔有沒有這個選項）與要補上的範本區塊。
+# 之後新增選項只要往這裡加一筆，自動更新的人就會被「保留原值、補上新選項」。
+_LAUNCH_OPTION_KEYS: dict[str, tuple[str, ...]] = {
+    "帳號": ("帳號", "帐号", "帳戶", "account", "玩家"),
+    "桌號": ("桌號", "桌号", "桌", "table"),
+    "對象": ("對象", "对象", "跟注對象", "target"),
+}
+_LAUNCH_OPTION_BLOCKS: dict[str, str] = {
+    "帳號": (
+        "# 【帳號】這台掛機的玩家帳號名稱（餘額上傳到試算表時用）。\n"
+        "#    直接打字輸入，不再用 OCR 辨識名字（OCR 容易讀錯）。\n"
+        "#    例：帳號=我的帳號名\n"
+        "帳號="
+    ),
+    "桌號": (
+        "# 【桌號】掛房要固定待著的桌號（例：5）。\n"
+        "#    被踢出或當機跳回大廳時，程式會自動回到這一桌。\n"
+        "#    留空或填 0 = 不指定（待在當前桌；回大廳時回任一桌）。\n"
+        "桌號="
+    ),
+    "對象": (
+        "# 【對象】掛房要跟注的對象暱稱，可填多個，用「、」或逗號分隔。\n"
+        "#    例：對象=阿明、小華、大雄\n"
+        "#    留空 = 沿用 follow_list.json 的名單。\n"
+        "#    若「指定的對象全部都不在這桌」→ 程式會暫停跟注（不補注防踢、\n"
+        "#    被踢回大廳也不會自動回桌），並透過 Telegram 通知。\n"
+        "對象="
+    ),
+}
+
+
+def _migrate_launch_settings() -> None:
+    """智能合併『啟動設定.txt』：保留使用者已填的值，只把『缺少的新選項』以註解
+    範本附加到檔尾（自動更新會保留舊檔，否則新選項不會出現在舊使用者的檔案裡）。
+    """
+    from star_follow import paths
+
+    p = paths.launch_settings_path()
+    if not p.is_file():
+        return
+    try:
+        raw = p.read_bytes()
+    except Exception:  # noqa: BLE001
+        return
+    text = None
+    for enc in ("utf-8-sig", "utf-8", "cp950", "big5", "latin-1"):
+        try:
+            text = raw.decode(enc)
+            break
+        except Exception:  # noqa: BLE001
+            continue
+    if text is None:
+        return
+
+    present: set[str] = set()
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s[0] in "#；;/":
+            continue
+        s = s.replace("＝", "=").replace("：", "=").replace(":", "=")
+        if "=" not in s:
+            continue
+        key = s.split("=", 1)[0].strip().replace(" ", "")
+        for opt, aliases in _LAUNCH_OPTION_KEYS.items():
+            if any(a in key for a in aliases):
+                present.add(opt)
+
+    missing = [opt for opt in _LAUNCH_OPTION_BLOCKS if opt not in present]
+    if not missing:
+        return
+    addition = "\n\n# === 新版自動補上的選項（可自行修改後存檔）===\n"
+    addition += "\n\n".join(_LAUNCH_OPTION_BLOCKS[o] for o in missing)
+    new_text = text.rstrip("\r\n") + "\n" + addition + "\n"
+    try:
+        p.write_text(new_text, encoding="utf-8-sig")
+        logging.getLogger(__name__).info(
+            "啟動設定.txt 已自動補上新選項：%s（原設定保留）", "、".join(missing)
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _balance_test() -> int:
@@ -158,6 +243,100 @@ def _balance_test() -> int:
         input("\n按 Enter 關閉本視窗...")
     except Exception:  # noqa: BLE001
         pass
+    return 0
+
+
+def _nav_test() -> int:
+    """回桌辨識診斷：每 2 秒截一次當前畫面，印出它判斷你在哪一頁、各模板比對分數、
+    以及它會點哪顆鈕。可一邊切換『大廳/棋牌/入口/牌桌』一邊看，方便校正門檻或補模板。
+    """
+    import time as _t
+
+    import numpy as np
+    from PIL import Image
+
+    from star_follow.automation.lobby_nav import diagnose_screen
+    from star_follow.capture.screen import capture_client
+    from star_follow.capture.window import find_game_window
+    from star_follow.config import load_config
+    from star_follow.paths import logs_dir
+
+    cfg = load_config()
+    wcfg = cfg.window
+    win = find_game_window(wcfg.title_substring, title_aliases=wcfg.title_aliases or None)
+    if win is None:
+        print("[找不到] 沒抓到星城視窗。請先開好星城，並用『系統管理員』執行。")
+        try:
+            input("\n按 Enter 關閉...")
+        except Exception:  # noqa: BLE001
+            pass
+        return 1
+
+    out = logs_dir()
+    out.mkdir(parents=True, exist_ok=True)
+    print("=== 回桌辨識診斷 ===")
+    print(f"視窗：{win.client_width}x{win.client_height}  標題={win.title!r}")
+    print("每 2 秒判斷一次。請依序停留：")
+    print("  ① 首頁大廳  ② 棋牌大廳(不要滑)  ③ 棋牌大廳(滑到百家樂)  ④ 百家樂入口  ⑤ 牌桌")
+    print("分數：百家樂卡片>=0.58=可點；<0.58且在棋牌區=要滑動。")
+    print("牌桌：僅 room_switch.png 模板命中才算（無模板請在牌桌跑 mark_rooms 存檔）。")
+    print("（按 Ctrl+C 結束）\n")
+
+    thr = {
+        "lobby_random_select.png": 0.60,
+        "lobby_qipai_menu.png": 0.55,
+        "lobby_confirm_button.png": 0.60,
+        "lobby_baccarat_card.png": 0.62,
+    }
+    n = 0
+    try:
+        while True:
+            n += 1
+            frame = capture_client(win)
+            info = diagnose_screen(frame, cfg, win)
+            ts = _t.strftime("%H%M%S")
+            shot = out / f"navtest_{ts}_{n}.png"
+            try:
+                Image.fromarray(np.asarray(frame)).save(shot)
+            except Exception:  # noqa: BLE001
+                pass
+            conf = info.get("confidence", 0) * 100
+            print(
+                f"[{ts}] 【{info.get('phase_label', info['phase'])}】"
+                f" 信心={conf:.0f}%  phase={info['phase']}"
+            )
+            print(
+                f"    模板: 百家樂卡={info['card_score']:.2f}"
+                f" 隨機選台={info['random_score']:.2f} 棋牌分頁={info.get('qipai_tab', '?')}"
+            )
+            print(
+                f"    結構: 牌列={info.get('card_row_score', 0):.2f}(>=0.48才算棋牌大廳)"
+                f"  在牌桌={info.get('table_hud')} (換桌模板/倒數OCR/左下桌號/籌碼列)"
+            )
+            ps = info.get("phase_scores") or {}
+            if ps:
+                ranked = sorted(ps.items(), key=lambda x: -x[1])
+                print("    各狀態得分: " + " | ".join(f"{k}={v:.2f}" for k, v in ranked[:5]))
+            ocr = info.get("ocr") or {}
+            if ocr:
+                print(f"    OCR: 隨機區={ocr.get('random','')!r} 棋牌鈕={ocr.get('menu','')!r}"
+                      f" 卡區={ocr.get('baccarat','')!r}")
+            print(f"    → {info.get('suggested_action', '')}")
+            for r in info.get("reasons") or []:
+                print(f"       {r}")
+            for s in info["scores"]:
+                name = s["template"]
+                t = thr.get(name, 0.55)
+                rg = s["region"]
+                wh = s["whole"]
+                rg_txt = f"區塊{rg[2]:.2f}@({rg[0]},{rg[1]})" if rg else "區塊:模板缺檔/區塊太小"
+                wh_txt = f"整張{wh[2]:.2f}@({wh[0]},{wh[1]})" if wh else "整張:無"
+                hit = "比中" if (rg and rg[2] >= t) else ("(整張有到)" if (wh and wh[2] >= t) else "未中")
+                print(f"    {s['label']:<14}門檻{t:.2f}  {rg_txt}  {wh_txt}  {hit}")
+            print(f"    截圖：{shot.name}\n")
+            _t.sleep(2.0)
+    except KeyboardInterrupt:
+        print("\n結束診斷。請把上面的輸出，加上 logs 裡的 navtest_*.png 給我。")
     return 0
 
 
@@ -267,7 +446,11 @@ def main() -> int:
     parser.add_argument("--selftest", action="store_true", help="自我檢查：確認設定檔/語言檔/OCR 可正常載入後結束")
     parser.add_argument("--balance-test", action="store_true", help="測試讀取左下角餘額與帳號名（校正 roi.balance / roi.account_name）")
     parser.add_argument("--list-windows", action="store_true", help="診斷：列出星城視窗（找不到時列出其他大視窗）")
+    parser.add_argument("--nav-test", action="store_true", help="診斷：每2秒判斷目前在大廳/棋牌/入口/牌桌哪一頁，印出各模板分數")
     args = parser.parse_args()
+
+    if getattr(args, "nav_test", False):
+        return _nav_test()
 
     if getattr(args, "list_windows", False):
         return _list_windows()
@@ -276,10 +459,15 @@ def main() -> int:
         return _balance_test()
 
     # 啟動設定檔（雙擊 exe 時用；命令列參數優先）
+    # 先做智能合併：保留舊值、補上新選項（自動更新者的舊檔才看得到新選項）
+    _migrate_launch_settings()
     settings = _read_launch_settings()
 
     if args.selftest or (settings["selftest"] and not (args.patrol or args.stay)):
         return _selftest()
+
+    if settings["nav_test"] and not (args.patrol or args.stay):
+        return _nav_test()
 
     if settings["list_windows"] and not (args.patrol or args.stay):
         return _list_windows()

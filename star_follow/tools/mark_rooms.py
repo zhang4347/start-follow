@@ -20,6 +20,8 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
+
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -284,7 +286,27 @@ class MarkRoomsApp:
                 self.cfg.roi[key] = val
                 written.append(f"{key}={val}")
         path = save_config(self.cfg, DEFAULT_CONFIG_PATH)
-        messagebox.showinfo("已儲存", f"{path}\n\n" + "\n".join(written))
+        tpl_msg = self._export_room_switch_template()
+        extra = f"\n\n{tpl_msg}" if tpl_msg else ""
+        messagebox.showinfo("已儲存", f"{path}\n\n" + "\n".join(written) + extra)
+
+    def _export_room_switch_template(self) -> str:
+        """從本次截圖裁切換桌圖示，供大廳畫面辨識『已在牌桌』用。"""
+        pt = self.points.get("room_switch_button")
+        if not pt or self._rgb is None:
+            return ""
+        x, y = int(pt[0]), int(pt[1])
+        half = 30
+        h, w = self._rgb.shape[:2]
+        y0, y1 = max(0, y - half), min(h, y + half)
+        x0, x1 = max(0, x - half), min(w, x + half)
+        crop = self._rgb[y0:y1, x0:x1]
+        if crop.size == 0:
+            return ""
+        out = Path(__file__).resolve().parents[1] / "vision" / "templates" / "room_switch.png"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(crop).save(out)
+        return f"已輸出換桌模板：{out}"
 
     def run(self) -> int:
         self.root.mainloop()

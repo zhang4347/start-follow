@@ -1054,7 +1054,11 @@ class FollowEngine:
 
         from star_follow.automation import lobby_nav
 
-        screen = lobby_nav.screen_state_fast(frame, self.cfg, win)
+        cap = lambda: capture_client(win)
+        if lobby_nav.dismiss_popup_if_any(win, self.cfg, cap):
+            return True
+        frame = capture_client(win)
+        screen = lobby_nav.screen_state_for_engine(frame, self.cfg, win, cap)
         if screen != "table":
             if self.phase != Phase.IDLE:
                 self.phase = Phase.IDLE
@@ -1552,11 +1556,13 @@ class FollowEngine:
         self._win = win
         frame = capture_client(win)
 
-        # 用大廳/入口專屬模板判斷現在到底在哪（is_baccarat_table 會被大廳底部彩色卡片
-        # 列誤判成牌桌，所以這裡改用 lobby_nav.detect_screen）。
         from star_follow.automation import lobby_nav
 
-        screen = lobby_nav.screen_state_fast(frame, self.cfg, win)
+        cap = lambda: capture_client(win)
+        if lobby_nav.dismiss_popup_if_any(win, self.cfg, cap):
+            return True
+        frame = capture_client(win)
+        screen = lobby_nav.screen_state_for_engine(frame, self.cfg, win, cap)
         if screen != "table":
             now = time.perf_counter()
             if now - self._last_lobby_log_mono >= 10.0:
