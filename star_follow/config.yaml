@@ -283,7 +283,10 @@ nav_confirm:
   min_agree: 2
   min_confidence: 0.5
   use_ocr: true
-  enter_table_wait_s: 28
-  enter_table_poll_s: 0.35
+  enter_table_wait_s: 45
+  enter_table_poll_s: 0.5
+  enter_table_log_interval_s: 7
+  kick_dismiss_cooldown_s: 12
+  kick_visual_suppress_s: 18
   not_table_grace_s: 10
   not_table_poll_s: 0.4

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import cv2
 import numpy as np
 
@@ -12,12 +14,30 @@ from star_follow.vision.roi import scale_point, scale_rect
 
 _T_CONFIRM = "lobby_confirm_button.png"
 _REF_DIALOG = (380, 370, 520, 290)
-# 較寬的內文區（OCR）
 _REF_MSG_OCR = (300, 385, 680, 150)
 _MSG_KEYS = ("五局", "未押注", "退出遊戲", "退出", "未押")
 _THR_TEMPLATE = 0.58
-_TEAL_MIN = 0.13
-_GREEN_MIN = 220
+_TEAL_MIN = 0.14
+_GREEN_MIN = 280
+_TITLE_PURPLE_MIN = 0.032
+
+# 點過確定仍「看得到」時：暫停視覺辨識與連點（常為牌桌 UI 誤判）
+_visual_suppress_until = 0.0
+_click_cooldown_until = 0.0
+
+
+def suppress_kick_visual(seconds: float) -> None:
+    global _visual_suppress_until
+    _visual_suppress_until = max(_visual_suppress_until, time.monotonic() + seconds)
+
+
+def suppress_kick_clicks(seconds: float) -> None:
+    global _click_cooldown_until
+    _click_cooldown_until = max(_click_cooldown_until, time.monotonic() + seconds)
+
+
+def kick_click_on_cooldown() -> bool:
+    return time.monotonic() < _click_cooldown_until
 
 
 def _dialog_rect(frame: np.ndarray, cfg: AppConfig) -> tuple[int, int, int, int]:
@@ -32,12 +52,19 @@ def _dialog_rect(frame: np.ndarray, cfg: AppConfig) -> tuple[int, int, int, int]
 
 
 def _kick_dialog_visual(frame: np.ndarray, cfg: AppConfig) -> bool:
-    """居中青綠底提示窗 + 下方綠色確定鈕（OCR 失敗時仍要能認到）。"""
+    """居中提示窗：紫標題列 + 青綠內文區 + 下方綠色確定鈕。"""
+    if time.monotonic() < _visual_suppress_until:
+        return False
     x, y, bw, bh = _dialog_rect(frame, cfg)
     roi = frame[y : y + bh, x : x + bw]
     if roi.size == 0 or bh < 40 or bw < 80:
         return False
-    hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
+    top = roi[: max(8, int(bh * 0.22)), :]
+    hsv_t = cv2.cvtColor(top, cv2.COLOR_RGB2HSV)
+    purple = cv2.inRange(hsv_t, np.array([115, 35, 45]), np.array([168, 255, 255]))
+    n_top = max(1, top.shape[0] * top.shape[1])
+    if float(purple.sum() / 255 / n_top) < _TITLE_PURPLE_MIN:
+        return False
     mid = roi[int(bh * 0.10) : int(bh * 0.55), :]
     if mid.size == 0:
         return False
@@ -47,7 +74,7 @@ def _kick_dialog_visual(frame: np.ndarray, cfg: AppConfig) -> bool:
         return False
     sub = roi[int(bh * 0.38) :, :]
     if sub.size == 0:
-        return True
+        return False
     hsv_s = cv2.cvtColor(sub, cv2.COLOR_RGB2HSV)
     green = cv2.inRange(hsv_s, np.array([32, 60, 60]), np.array([95, 255, 255]))
     return int(green.sum() / 255) >= _GREEN_MIN
@@ -75,15 +102,15 @@ def is_kick_idle_popup(
     *,
     win: object | None = None,
 ) -> bool:
-    """五局未押注提示窗：OCR 關鍵字、視覺（青綠底+綠鈕）、或確定鈕模板。"""
+    """五局未押注提示窗：OCR、紫標題+青綠視覺、或確定鈕模板。"""
     hit, _text = kick_popup_message_ocr(frame, cfg)
     if hit:
-        return True
-    if _kick_dialog_visual(frame, cfg):
         return True
     x, y, bw, bh = _dialog_rect(frame, cfg)
     tpl = match_template_in_region(frame, _T_CONFIRM, (x, y, bw, bh), threshold=0.0)
     if tpl and float(tpl[2]) >= _THR_TEMPLATE:
+        return True
+    if _kick_dialog_visual(frame, cfg):
         return True
     return False
 

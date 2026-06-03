@@ -968,8 +968,8 @@ class FollowEngine:
         self.ctx = RoundContext()
         self._cd_tracker.reset()
         self._stay_idle_rounds = 0
-        self._stay_at_table_grace_until = time.monotonic() + 15.0
-        logger.info("掛房已回到牌桌，恢復跟注（15s 內不因畫面閃爍重跑回桌）")
+        self._stay_at_table_grace_until = time.monotonic() + 30.0
+        logger.info("掛房已回到牌桌，恢復跟注（30s 內不因畫面閃爍重跑回桌）")
         return True
 
     def _update_stay_presence(self) -> None:
@@ -1579,7 +1579,8 @@ class FollowEngine:
                 self.phase = Phase.IDLE
                 self.ctx = RoundContext()
                 self._cd_tracker.reset()
-                logger.info("已自動回到百家樂桌，繼續巡房")
+                self._stay_at_table_grace_until = time.monotonic() + 30.0
+                logger.info("已自動回到百家樂桌，繼續巡房（30s 內不因畫面閃爍重跑回桌）")
             return True
 
         if not self._win_logged:

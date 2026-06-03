@@ -18,16 +18,18 @@ _REF_SWITCH_SEARCH = (1000, 4, 275, 108)
 _REF_QIPAI_TAB = (1130, 335, 150, 95)
 
 
-def is_lobby(frame: np.ndarray) -> bool:
-    """百家樂入口／大廳：中央大片黃字說明、尚無牌桌籌碼列。"""
+def is_lobby(frame: np.ndarray, cfg: AppConfig | None = None) -> bool:
+    """百家樂入口：中央黃字說明，且尚無牌桌籌碼列／倒數區特徵。"""
     h, w = frame.shape[:2]
     if _has_chip_bar(frame):
+        return False
+    if cfg is not None and _has_countdown_area(frame, cfg):
         return False
     center = frame[int(h * 0.25) : int(h * 0.72), int(w * 0.18) : int(w * 0.72)]
     hsv = cv2.cvtColor(center, cv2.COLOR_RGB2HSV)
     yellow = cv2.inRange(hsv, np.array([15, 70, 100]), np.array([45, 255, 255]))
     ratio = yellow.sum() / 255 / max(1, center.shape[0] * center.shape[1])
-    return ratio > 0.018
+    return ratio > 0.032
 
 
 def _has_chip_bar(frame: np.ndarray) -> bool:
@@ -154,7 +156,7 @@ def _read_valid_table_no(
 
 def _sidebar_looks_like_qipai_hall(frame: np.ndarray, cfg: AppConfig) -> bool:
     """右側棋牌分頁明顯亮起（金/亮占比夠高），且非入口黃字畫面。"""
-    if is_lobby(frame):
+    if is_lobby(frame, cfg):
         return False
     h, w = frame.shape[:2]
     ref_w = cfg.window.reference_width or 1280
@@ -166,6 +168,13 @@ def _sidebar_looks_like_qipai_hall(frame: np.ndarray, cfg: AppConfig) -> bool:
     return highlight_r >= 0.10 and purple_r < 0.16
 
 
+def _table_hud_without_ocr(frame: np.ndarray, cfg: AppConfig) -> bool:
+    """倒數區有圓形對比 + 底部籌碼列（載入中 OCR 尚未讀到秒數時用）。"""
+    if not (_has_countdown_area(frame, cfg) and _has_chip_bar(frame)):
+        return False
+    return not _sidebar_looks_like_qipai_hall(frame, cfg)
+
+
 def detect_in_baccarat_room(
     frame: np.ndarray,
     cfg: AppConfig,
@@ -173,14 +182,17 @@ def detect_in_baccarat_room(
 ) -> tuple[bool, dict]:
     """是否在百家樂牌桌內（與舊版 is_baccarat_table 類似，但排除明確大廳／入口）。"""
     meta: dict = {"method": "none"}
-    if is_lobby(frame):
-        meta["reason"] = "entry_yellow"
-        return False, meta
-
     from star_follow.vision.kick_popup import is_kick_idle_popup
 
     if is_kick_idle_popup(frame, cfg, win=win):
         meta["reason"] = "kick_popup"
+        return False, meta
+
+    if is_lobby(frame, cfg):
+        if _table_hud_without_ocr(frame, cfg):
+            meta = {"method": "table_hud"}
+            return True, meta
+        meta["reason"] = "entry_yellow"
         return False, meta
 
     # 先確認牌桌特徵；牌桌畫面右側常誤判「棋牌已選中」，不可先否決

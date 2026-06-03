@@ -210,7 +210,7 @@ def compute_scene_features(
         card_row=card_row,
         home_purple=purple_r,
         qipai_tab=tab,
-        entry_yellow=is_lobby(frame),
+        entry_yellow=is_lobby(frame, cfg),
         random_tpl=random_score,
         baccarat_card_tpl=baccarat_card_score,
         table_switch=float(sw_meta.get("switch_score", 0.0)),

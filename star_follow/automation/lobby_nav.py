@@ -385,8 +385,11 @@ def _read_nav_cfg(cfg: AppConfig) -> dict:
         "min_agree": max(1, int(raw.get("min_agree", 2))),
         "min_confidence": float(raw.get("min_confidence", _MIN_CONFIDENCE)),
         "use_ocr": bool(raw.get("use_ocr", True)),
-        "enter_table_wait_s": float(raw.get("enter_table_wait_s", 28.0)),
-        "enter_table_poll_s": float(raw.get("enter_table_poll_s", 0.35)),
+        "enter_table_wait_s": float(raw.get("enter_table_wait_s", 45.0)),
+        "enter_table_poll_s": float(raw.get("enter_table_poll_s", 0.5)),
+        "enter_table_log_interval_s": float(raw.get("enter_table_log_interval_s", 7.0)),
+        "kick_dismiss_cooldown_s": float(raw.get("kick_dismiss_cooldown_s", 12.0)),
+        "kick_visual_suppress_s": float(raw.get("kick_visual_suppress_s", 18.0)),
         "not_table_grace_s": float(raw.get("not_table_grace_s", 10.0)),
         "not_table_poll_s": float(raw.get("not_table_poll_s", 0.4)),
     }
@@ -593,20 +596,42 @@ def _find_popup_confirm_xy(
 def dismiss_popup_if_any(
     win: GameWindow, cfg: AppConfig, capture_fn: Callable[[], np.ndarray]
 ) -> bool:
-    """關閉『超過五局未押注』提示（OCR／視覺／模板命中才點一次確定）。"""
+    """關閉『超過五局未押注』提示（OCR／模板優先；點一次後冷卻，避免牌桌誤判連點）。"""
+    from star_follow.vision.kick_popup import (
+        is_kick_idle_popup,
+        kick_click_on_cooldown,
+        suppress_kick_clicks,
+        suppress_kick_visual,
+    )
+
+    nc = _read_nav_cfg(cfg)
+    if kick_click_on_cooldown():
+        return True
     frame = capture_fn()
-    if not _is_kick_popup_visible(frame, cfg, win):
+    if not is_kick_idle_popup(frame, cfg, win=win):
+        return False
+    from star_follow.vision.game_detect import _table_hud_without_ocr
+
+    if _table_hud_without_ocr(frame, cfg):
+        suppress_kick_visual(nc["kick_visual_suppress_s"])
+        logger.info("牌桌倒數+籌碼列已出現，略過五局提示點擊（避免牌桌誤判）")
         return False
     xy = _find_popup_confirm_xy(frame, cfg, win)
     if not xy:
         logger.warning("五局提示已偵測但找不到確定座標，略過點擊")
+        suppress_kick_visual(nc["kick_visual_suppress_s"])
         return False
     logger.info("偵測到五局未押注提示，點『確定』(%d,%d)", xy[0], xy[1])
     click_at(win, xy[0], xy[1], backend=cfg.automation.ui_click_backend)
     time.sleep(0.85)
-    if not _is_kick_popup_visible(capture_fn(), cfg, win):
+    if not is_kick_idle_popup(capture_fn(), cfg, win=win):
         return True
-    logger.warning("點過確定後仍偵測到五局提示，不再連點（避免誤判狂點）")
+    logger.warning(
+        "點過確定後仍偵測到五局提示，%ds 內不再點（可能為牌桌畫面誤判）",
+        int(nc["kick_dismiss_cooldown_s"]),
+    )
+    suppress_kick_visual(nc["kick_visual_suppress_s"])
+    suppress_kick_clicks(nc["kick_dismiss_cooldown_s"])
     return True
 
 
@@ -652,10 +677,19 @@ def _wait_enter_table(
     *,
     timeout_s: float,
     poll_s: float,
+    log_interval_s: float = 7.0,
 ) -> bool:
-    """點完隨機選台後等待進房：倒數 OCR／左下桌號／籌碼列／換桌模板。"""
-    logger.info("進桌載入中，等待牌桌特徵（最多 %.0fs，不會去滑棋牌大廳）…", timeout_s)
+    """點完隨機選台後等待進房：每 poll_s 截圖一次，最多 timeout_s。"""
+    est = max(1, int(timeout_s / max(poll_s, 0.2)))
+    logger.info(
+        "進桌載入中，每 %.1fs 截圖偵測牌桌特徵（最多 %.0fs，約 %d 次）…",
+        poll_s,
+        timeout_s,
+        est,
+    )
     deadline = time.monotonic() + timeout_s
+    started = time.monotonic()
+    last_log = started
     while time.monotonic() < deadline:
         frame = capture_fn()
         ok, meta = detect_in_baccarat_room(frame, cfg, win)
@@ -664,10 +698,23 @@ def _wait_enter_table(
             return True
         nav = classify_nav_screen(frame, cfg, win, use_ocr=False)
         if nav.phase == PHASE_TABLE:
+            logger.info("已進入牌桌（畫面階段=table）")
             return True
         if nav.phase in (PHASE_HOME, PHASE_ENTRY):
             logger.warning("進桌等待中卻回到 %s，停止等待", nav.label)
             return False
+        now = time.monotonic()
+        if now - last_log >= log_interval_s:
+            elapsed = now - started
+            logger.info(
+                "進桌等待 %.0fs/%.0fs：尚未進房 method=%s reason=%s 畫面=%s",
+                elapsed,
+                timeout_s,
+                meta.get("method") or "-",
+                meta.get("reason") or "-",
+                nav.label,
+            )
+            last_log = now
         time.sleep(poll_s)
     logger.warning("進桌等待逾時（%.0fs）仍未偵測到牌桌特徵", timeout_s)
     return False
@@ -772,6 +819,13 @@ def return_to_baccarat_table(
             return True
 
         if phase == PHASE_ENTRY:
+            ok_room, room_meta = detect_in_baccarat_room(frame, cfg, win)
+            if ok_room:
+                logger.info(
+                    "畫面像入口但已在牌桌（%s），略過點『隨機選台』",
+                    room_meta.get("method", ""),
+                )
+                return True
             _click_entry(win, cfg, frame)
             qipai_enter_mono = None
             nc = _read_nav_cfg(cfg)
@@ -781,6 +835,7 @@ def return_to_baccarat_table(
                 win,
                 timeout_s=nc["enter_table_wait_s"],
                 poll_s=nc["enter_table_poll_s"],
+                log_interval_s=nc["enter_table_log_interval_s"],
             )
             continue
 
