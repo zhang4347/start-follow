@@ -54,9 +54,57 @@ class SceneFeatures:
     table_bottom_no: float = 0.0
     table_ui: float = 0.0
     chip_bar: bool = False
+    entry_score: float = 0.0
 
     phase_scores: dict[str, float] = field(default_factory=dict)
     reasons: list[str] = field(default_factory=list)
+
+
+def measure_center_yellow_ratio(frame: np.ndarray) -> float:
+    """中央黃字說明（入口／規則頁），不套用 is_lobby 的倒數否決。"""
+    h, w = frame.shape[:2]
+    center = frame[int(h * 0.25) : int(h * 0.72), int(w * 0.18) : int(w * 0.72)]
+    if center.size == 0:
+        return 0.0
+    hsv = cv2.cvtColor(center, cv2.COLOR_RGB2HSV)
+    yellow = cv2.inRange(hsv, np.array([15, 70, 100]), np.array([45, 255, 255]))
+    return float(yellow.sum() / 255 / max(1, center.shape[0] * center.shape[1]))
+
+
+def measure_random_button_score(frame: np.ndarray, cfg: AppConfig) -> float:
+    """右下角『隨機選台』按鈕區（綠／金）。"""
+    band = _scale_band(frame, cfg, _REF_RANDOM)
+    if band.size == 0:
+        return 0.0
+    hsv = cv2.cvtColor(band, cv2.COLOR_RGB2HSV)
+    green = cv2.inRange(hsv, np.array([32, 50, 80]), np.array([95, 255, 255]))
+    warm = cv2.inRange(hsv, np.array([12, 55, 90]), np.array([42, 255, 255]))
+    r = max(float(green.mean()) / 255.0, float(warm.mean()) / 255.0)
+    return min(1.0, r * 3.5)
+
+
+def measure_baccarat_entry_score(
+    frame: np.ndarray,
+    cfg: AppConfig,
+    *,
+    random_tpl: float = 0.0,
+) -> float:
+    """百家樂入口（準備點隨機選台）：優先於首頁紫色分頁判斷。"""
+    if _chip_bar(frame):
+        return 0.0
+    score = 0.0
+    y = measure_center_yellow_ratio(frame)
+    if y >= 0.016:
+        score = max(score, min(1.0, y * 20.0))
+    if random_tpl >= 0.30:
+        score = max(score, random_tpl)
+    score = max(score, measure_random_button_score(frame, cfg) * 0.9)
+    t_cd = measure_table_countdown(frame, cfg)
+    t_menu = measure_table_menu_chart(frame, cfg)
+    # 入口說明頁頂部常讓倒數 ROI 偏高，但尚無籌碼列／牌桌選單
+    if t_cd >= 0.50 and t_menu < 0.42:
+        score = max(score, 0.52)
+    return score
 
 
 def _scale_band(frame: np.ndarray, cfg: AppConfig, ref_rect: tuple[int, int, int, int]) -> np.ndarray:
@@ -202,6 +250,7 @@ def compute_scene_features(
     t_cd = measure_table_countdown(frame, cfg)
     t_no = measure_table_bottom_no(frame, cfg)
     card_row = measure_card_row_score(frame, cfg)
+    entry_score = measure_baccarat_entry_score(frame, cfg, random_tpl=random_score)
 
     at_table = sw_ok or in_room
     table_ui = 1.0 if at_table else 0.0
@@ -211,6 +260,7 @@ def compute_scene_features(
         home_purple=purple_r,
         qipai_tab=tab,
         entry_yellow=is_lobby(frame, cfg),
+        entry_score=entry_score,
         random_tpl=random_score,
         baccarat_card_tpl=baccarat_card_score,
         table_switch=float(sw_meta.get("switch_score", 0.0)),
@@ -231,6 +281,7 @@ def _score_phases(f: SceneFeatures) -> tuple[dict[str, float], list[str]]:
     s: dict[str, float] = {PHASE_UNKNOWN: 0.05}
     reasons: list[str] = []
     at_table = f.table_switch_ok or f.in_room
+    entry_like = f.entry_score >= 0.40 or f.entry_yellow or f.random_tpl >= 0.38
 
     # --- 1) 牌桌 ---
     if at_table:
@@ -240,22 +291,20 @@ def _score_phases(f: SceneFeatures) -> tuple[dict[str, float], list[str]]:
         else:
             reasons.append(f"牌桌：在房內 ({f.in_room_method or 'detect'})")
 
-    # --- 2) 入口：中央黃字說明或隨機選台模板（優先於首頁，避免 scene3 判成首頁）---
-    if not at_table:
-        if f.entry_yellow:
-            s[PHASE_ENTRY] = 0.92 + f.random_tpl * 0.45
-            reasons.append("入口：中央黃字說明區")
-        elif f.random_tpl >= 0.62 and f.entry_yellow:
-            s[PHASE_ENTRY] = f.random_tpl * 1.1
-            reasons.append("入口：隨機選台模板+黃字")
+    # --- 2) 入口（優先於首頁；倒數 ROI 偏高但無籌碼列也算入口）---
+    if not at_table and entry_like:
+        s[PHASE_ENTRY] = 1.08 + f.entry_score * 0.45 + f.random_tpl * 0.25
+        reasons.append(
+            f"入口：entry_score={f.entry_score:.2f} 黃字={f.entry_yellow} random_tpl={f.random_tpl:.2f}"
+        )
 
-    # --- 3) 首頁：右側棋牌分頁紫色未選中 ---
-    if not at_table and not f.entry_yellow and f.qipai_tab == "unselected":
+    # --- 3) 首頁：僅「未進棋牌」且不像入口 ---
+    if not at_table and not entry_like and f.qipai_tab == "unselected" and f.home_purple >= 0.20:
         s[PHASE_HOME] = 0.62 + f.home_purple * 0.55
         reasons.append(f"首頁：棋牌分頁紫色 purple={f.home_purple:.2f}")
 
     # --- 4) 棋牌大廳：棋牌分頁已選中（金/亮）---
-    if not at_table and not f.entry_yellow and f.qipai_tab == "selected":
+    if not at_table and not entry_like and f.qipai_tab == "selected":
         if f.baccarat_card_tpl >= 0.52:
             s[PHASE_QIPAI_READY] = 0.72 + f.baccarat_card_tpl * 0.55
             reasons.append(f"棋牌可點百家樂：card_tpl={f.baccarat_card_tpl:.2f}")
@@ -283,6 +332,8 @@ def classify_phase_from_features(f: SceneFeatures, *, min_conf: float = 0.48, mi
         return PHASE_UNKNOWN, 0.3
     if phase == PHASE_HOME and f.qipai_tab != "unselected":
         return PHASE_UNKNOWN, 0.3
-    if phase == PHASE_ENTRY and not f.entry_yellow and f.random_tpl < 0.48:
+    if phase == PHASE_ENTRY and f.entry_score < 0.32 and f.random_tpl < 0.35 and not f.entry_yellow:
         return PHASE_UNKNOWN, 0.3
+    if phase == PHASE_HOME and f.entry_score >= 0.40:
+        return PHASE_ENTRY, max(conf, 0.75)
     return phase, conf

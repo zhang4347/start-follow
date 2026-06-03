@@ -990,6 +990,18 @@ class FollowEngine:
         need = max(1, self.cfg.room.stay_absent_rounds_to_pause)
         if self._stay_absent_streak >= need and not self._stay_paused:
             self._stay_paused = True
+            msg = f"{table_tag} 已無任何追蹤對象"
+            if getattr(self.cfg.room, "stay_stop_when_targets_absent", True):
+                logger.warning(
+                    "連續 %d 局都沒有任何指定對象在%s → 發送通知後停止程式",
+                    self._stay_absent_streak,
+                    table_tag,
+                )
+                if not self._stay_pause_notified:
+                    self._stay_pause_notified = True
+                    self._notify_targets_gone(f"{msg}，程式即將停止")
+                self.stop()
+                return
             logger.warning(
                 "連續 %d 局都沒有任何指定對象在%s → 暫停跟注（不防踢、被踢也不自動回桌）",
                 self._stay_absent_streak,
@@ -997,7 +1009,7 @@ class FollowEngine:
             )
             if not self._stay_pause_notified:
                 self._stay_pause_notified = True
-                self._notify_targets_gone(f"{table_tag} 已無任何追蹤對象，暫停跟注")
+                self._notify_targets_gone(f"{msg}，暫停跟注")
 
     def _maybe_anti_kick(self, frame, t_bet: int | None, cd_color: CountdownColor) -> bool:
         """掛房防踢：連續多局沒下注時，自己補一手最小注（莊/閒）避免被系統踢出。

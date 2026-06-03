@@ -75,6 +75,7 @@ room:
   stay_targets: []
   stay_pause_when_targets_absent: true
   stay_absent_rounds_to_pause: 3
+  stay_stop_when_targets_absent: true
 betting:
   follow_exclude:
   - 莊

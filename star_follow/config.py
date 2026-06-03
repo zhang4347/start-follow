@@ -111,6 +111,8 @@ class RoomConfig:
     stay_pause_when_targets_absent: bool = True
     # 連續這麼多局都讀不到任何指定對象，才判定「對象全離桌」並暫停（容忍偶發漏讀）。
     stay_absent_rounds_to_pause: int = 3
+    # 對象全離桌：發 TG 後停止引擎（false 則僅暫停、不回桌）
+    stay_stop_when_targets_absent: bool = True
 
 
 @dataclass
@@ -297,6 +299,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
             stay_targets=[str(x) for x in (rm.get("stay_targets") or [])],
             stay_pause_when_targets_absent=bool(rm.get("stay_pause_when_targets_absent", True)),
             stay_absent_rounds_to_pause=int(rm.get("stay_absent_rounds_to_pause", 3)),
+            stay_stop_when_targets_absent=bool(rm.get("stay_stop_when_targets_absent", True)),
         ),
         betting=BettingConfig(
             follow_exclude=[str(x) for x in (bt.get("follow_exclude") or ["莊", "閒"])],

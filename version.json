@@ -1,6 +1,6 @@
 {
-  "version": "1.1.9",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.1.9/StarFollow_1.1.9.zip",
-  "sha256": "3e477ce4fd13dc2c8e3c4d4db3112bbf0033fccb7fd69628e4bf8f7893dead44",
-  "notes": "進桌等待改 45s；倒數+籌碼列可判在房；入口前檢查已在房則不點選台；五局提示加紫標題+冷卻防狂點；回桌成功 30s grace"
+  "version": "1.2.0",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.0/StarFollow_1.2.0.zip",
+  "sha256": "e1deae126ae34920c2f61d3cc0d7d56cfa3ae874cfa48affcebce45c33d4cb59",
+  "notes": "場景辨識：入口分優先於首頁（隨機選台畫面不再狂點棋牌）；回桌 OCR+14s 點擊冷卻；掛房對象全離桌 TG 後停止"
 }

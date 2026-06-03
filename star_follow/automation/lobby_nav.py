@@ -86,6 +86,7 @@ _AMBIGUOUS_GAP = 0.12
 _QIPAI_ENTER_GRACE_S = 14.0
 _SCROLL_MAX_DRAGS = 4
 _SCROLL_MAX_ROUNDS = 2
+_NAV_CLICK_COOLDOWN_S = 14.0
 
 # OCR 裁切區（1280×720）：關鍵字當模板外的第二證據
 _RECT_OCR_CARDS = (160, 290, 960, 300)
@@ -309,6 +310,14 @@ def classify_nav_screen(
         override_note = f"在房內覆寫：{phase}→table ({in_meta.get('method', '')})"
         phase = PHASE_TABLE
         confidence = max(confidence, 0.88)
+    elif (
+        not in_ok
+        and scene.entry_score >= 0.40
+        and phase in (PHASE_HOME, PHASE_UNKNOWN)
+    ):
+        override_note = f"入口分數={scene.entry_score:.2f}→百家樂入口（非首頁）"
+        phase = PHASE_ENTRY
+        confidence = max(confidence, 0.82)
 
     reasons: list[str] = []
     if override_note:
@@ -317,8 +326,8 @@ def classify_nav_screen(
         [
             f"【計分】牌列結構={scene.card_row:.2f} 牌桌ui={scene.table_ui:.2f} "
             f"在房內={scene.in_room}({scene.in_room_method}) "
-            f"倒數OCR區={scene.table_countdown:.2f} 統計圖={scene.table_menu_chart:.2f} "
-            f"桌號區={scene.table_bottom_no:.2f}",
+            f"入口分={scene.entry_score:.2f} 倒數OCR區={scene.table_countdown:.2f} "
+            f"統計圖={scene.table_menu_chart:.2f} 桌號區={scene.table_bottom_no:.2f}",
             f"模板 random={sig['random_score']:.2f} baccarat_card={sig['card_score']:.2f}",
             f"棋牌分頁={sig.get('qipai_tab')} 紫={sig.get('purple_r', 0):.2f} 換桌={scene.table_switch_ok}",
         ]
@@ -399,6 +408,8 @@ def classify_nav_screen_confirmed(
     capture_fn: Callable[[], np.ndarray],
     cfg: AppConfig,
     win: GameWindow,
+    *,
+    force_ocr: bool = False,
 ) -> NavScreenResult:
     """回桌／點擊前用：連續擷取多張，多數決 + 取信心最高者，減少一幀誤判。"""
     nc = _read_nav_cfg(cfg)
@@ -412,7 +423,7 @@ def classify_nav_screen_confirmed(
                 capture_fn(),
                 cfg,
                 win,
-                use_ocr=nc["use_ocr"] and (i == n - 1),
+                use_ocr=force_ocr or (nc["use_ocr"] and (i == n - 1)),
             )
         )
     from collections import Counter
@@ -781,11 +792,18 @@ def return_to_baccarat_table(
     backup_card_tried = False
     stuck = 0
     saved_unknown = False
+    last_click_mono: dict[str, float] = {}
+
+    def _click_allowed(key: str) -> bool:
+        return time.monotonic() - last_click_mono.get(key, 0.0) >= _NAV_CLICK_COOLDOWN_S
+
+    def _mark_clicked(key: str) -> None:
+        last_click_mono[key] = time.monotonic()
 
     while time.monotonic() < deadline:
         if dismiss_popup_if_any(win, cfg, cap):
             continue
-        nav = classify_nav_screen_confirmed(cap, cfg, win)
+        nav = classify_nav_screen_confirmed(cap, cfg, win, force_ocr=True)
         phase = nav.phase
         frame = cap()
 
@@ -826,9 +844,21 @@ def return_to_baccarat_table(
                     room_meta.get("method", ""),
                 )
                 return True
-            _click_entry(win, cfg, frame)
-            qipai_enter_mono = None
             nc = _read_nav_cfg(cfg)
+            if not _click_allowed("entry_random"):
+                logger.info("入口：%ds 內已點過隨機選台，等待進桌…", _NAV_CLICK_COOLDOWN_S)
+                _wait_enter_table(
+                    cap,
+                    cfg,
+                    win,
+                    timeout_s=min(15.0, nc["enter_table_wait_s"]),
+                    poll_s=nc["enter_table_poll_s"],
+                    log_interval_s=nc["enter_table_log_interval_s"],
+                )
+                continue
+            _click_entry(win, cfg, frame)
+            _mark_clicked("entry_random")
+            qipai_enter_mono = None
             _wait_enter_table(
                 cap,
                 cfg,
@@ -883,13 +913,27 @@ def return_to_baccarat_table(
             continue
 
         if phase == PHASE_HOME:
-            if nav.qipai_tab == "selected":
+            sig_now = _gather_signals(frame, cfg, win)
+            scene = sig_now.get("scene")
+            if scene and scene.entry_score >= 0.40:
+                logger.info(
+                    "判定為首頁但入口分=%.2f→下一輪改判入口",
+                    scene.entry_score,
+                )
+                continue
+            elif nav.qipai_tab == "selected":
                 logger.warning("首頁：棋牌分頁已亮起但還在大廳畫面，先等待…")
                 time.sleep(0.8)
                 continue
-            _click_home_qipai(win, cfg, frame)
-            qipai_enter_mono = time.monotonic()
-            continue
+            elif not _click_allowed("home_qipai"):
+                logger.info("首頁：%ds 內已點過棋牌，等待畫面切換…", _NAV_CLICK_COOLDOWN_S)
+                time.sleep(0.8)
+                continue
+            else:
+                _click_home_qipai(win, cfg, frame)
+                _mark_clicked("home_qipai")
+                qipai_enter_mono = time.monotonic()
+                continue
 
         if qipai_enter_mono is not None:
             card = _scroll_right_find_card(win, cfg, cap)
