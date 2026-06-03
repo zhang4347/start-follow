@@ -1,6 +1,6 @@
 {
-  "version": "1.2.2",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.2/StarFollow_1.2.2.zip",
-  "sha256": "ea74d11a89be4195ee0a72c9cc0491fd75601c16ef231d01a51e29f2bee001ea",
-  "notes": "掛房：1局無對象即TG+停止；局內跳過大廳導覽加速定稿；五局提示先判牌桌HUD"
+  "version": "1.2.3",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.3/StarFollow_1.2.3.zip",
+  "sha256": "d2ae79aa332cd0d809be68bb66516f61f67f81ed21976e19fffdd6230ed2d2b9",
+  "notes": "五局提示最高優先且先點確定；僅籌碼列不算在房；巡房開統計前 prepare_for_table_play"
 }

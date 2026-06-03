@@ -1113,30 +1113,47 @@ class FollowEngine:
         from star_follow.automation import lobby_nav
 
         cap = lambda: capture_client(win)
-        early, screen = self._engine_lobby_check(win, frame, cap)
-        if early:
-            return True
-        if screen != "table" and time.monotonic() < self._stay_at_table_grace_until:
-            return True
-        if screen != "table":
-            if self.phase != Phase.IDLE:
-                self.phase = Phase.IDLE
-                self.ctx = RoundContext()
-                self._cd_tracker.reset()
-                self._last_logged_t = None
-            # 對象全離桌而暫停中：不自動回桌（讓它待在大廳，不再進房）
-            if self._stay_paused:
-                now = time.perf_counter()
-                if now - self._last_stay_pause_log_mono >= 15.0:
-                    logger.info("追蹤對象已離桌，暫停中，不自動回桌（畫面=%s）", screen)
-                    self._last_stay_pause_log_mono = now
+        if self._in_active_betting_phase():
+            early, screen = self._engine_lobby_check(win, frame, cap)
+            if early:
                 return True
-            now = time.perf_counter()
-            if now - self._last_lobby_log_mono >= 10.0:
-                logger.info("掛房偵測到不在牌桌（%s），自動回桌…", screen)
-                self._last_lobby_log_mono = now
-            self._stay_return_to_table(win)
-            return True
+            if screen != "table" and time.monotonic() < self._stay_at_table_grace_until:
+                return True
+            if screen != "table":
+                if self.phase != Phase.IDLE:
+                    self.phase = Phase.IDLE
+                    self.ctx = RoundContext()
+                    self._cd_tracker.reset()
+                    self._last_logged_t = None
+                if self._stay_paused:
+                    now = time.perf_counter()
+                    if now - self._last_stay_pause_log_mono >= 15.0:
+                        logger.info("追蹤對象已離桌，暫停中，不自動回桌（畫面=%s）", screen)
+                        self._last_stay_pause_log_mono = now
+                    return True
+                now = time.perf_counter()
+                if now - self._last_lobby_log_mono >= 10.0:
+                    logger.info("掛房偵測到不在牌桌（%s），自動回桌…", screen)
+                    self._last_lobby_log_mono = now
+                self._stay_return_to_table(win)
+                return True
+        else:
+            ready, screen = lobby_nav.prepare_for_table_play(win, self.cfg, cap)
+            if not ready:
+                if screen != "table":
+                    if self._stay_paused:
+                        now = time.perf_counter()
+                        if now - self._last_stay_pause_log_mono >= 15.0:
+                            logger.info("追蹤對象已離桌，暫停中，不自動回桌（畫面=%s）", screen)
+                            self._last_stay_pause_log_mono = now
+                        return True
+                    now = time.perf_counter()
+                    if now - self._last_lobby_log_mono >= 10.0:
+                        logger.info("掛房偵測到不在牌桌（%s），自動回桌…", screen)
+                        self._last_lobby_log_mono = now
+                    self._stay_return_to_table(win)
+                return True
+            self._cached_screen = "table"
 
         if not self._win_logged:
             focus_window(win.hwnd)
@@ -1618,26 +1635,17 @@ class FollowEngine:
         from star_follow.automation import lobby_nav
 
         cap = lambda: capture_client(win)
-        if lobby_nav.dismiss_popup_if_any(win, self.cfg, cap):
-            return True
-        frame = capture_client(win)
-        screen = lobby_nav.screen_state_for_engine(frame, self.cfg, win, cap)
-        if screen != "table":
+        ready, screen = lobby_nav.prepare_for_table_play(win, self.cfg, cap)
+        if not ready:
             now = time.perf_counter()
-            if now - self._last_lobby_log_mono >= 10.0:
-                logger.info("偵測到不在牌桌（%s），自動導覽回任一百家樂桌…", screen)
+            if now - self._last_lobby_log_mono >= 8.0:
+                logger.info("尚未就緒（%s），先回桌或關提示…", screen)
                 self._last_lobby_log_mono = now
-            ok = lobby_nav.return_to_baccarat_table(win, self.cfg, lambda: capture_client(win))
-            if ok:
-                # 回到新桌：重置目前桌號與巡房狀態，下一輪重新讀桌
-                self._patrol_current = None
-                self.phase = Phase.IDLE
-                self.ctx = RoundContext()
-                self._cd_tracker.reset()
-                self._stay_at_table_grace_until = time.monotonic() + 30.0
-                logger.info("已自動回到百家樂桌，繼續巡房（30s 內不因畫面閃爍重跑回桌）")
+            if screen != PHASE_TABLE:
+                lobby_nav.return_to_baccarat_table(win, self.cfg, cap)
             return True
 
+        frame = capture_client(win)
         if not self._win_logged:
             focus_window(win.hwnd)
             logger.info("巡房模式啟動，鎖定「%s」client=%dx%d", win.title, win.client_width, win.client_height)
@@ -1649,6 +1657,10 @@ class FollowEngine:
             cur = read_current_table(frame, self.cfg, win)
             if cur is not None:
                 self._patrol_current = cur
+
+        if self._patrol_current is None:
+            logger.warning("已在牌桌但讀不到桌號，本輪不開統計")
+            return True
 
         # 不管現在能不能下注，先開統計表看本桌有沒有追蹤對象：
         #   有 → 黏桌持續跟注，到對象某局沒下邊注才換桌（在 _patrol_visit_table 內處理）

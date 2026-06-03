@@ -56,6 +56,7 @@ class SceneFeatures:
     chip_bar: bool = False
     entry_score: float = 0.0
     highlight_r: float = 0.0
+    kick_popup: bool = False
 
     phase_scores: dict[str, float] = field(default_factory=dict)
     reasons: list[str] = field(default_factory=list)
@@ -245,6 +246,9 @@ def compute_scene_features(
     tab_rect = scale_rect(list(_REF_QIPAI_TAB), ref_w, ref_h, w, h)
     tab, purple_r, highlight_r = qipai_sidebar_tab_state(frame, tab_rect)
 
+    from star_follow.vision.kick_popup import is_kick_idle_popup
+
+    kick = is_kick_idle_popup(frame, cfg, win=win)
     sw_ok, sw_meta = detect_room_switch_button(frame, cfg)
     in_room, room_meta = detect_in_baccarat_room(frame, cfg, win)
     t_menu = measure_table_menu_chart(frame, cfg)
@@ -263,6 +267,7 @@ def compute_scene_features(
         qipai_tab=tab,
         entry_yellow=is_lobby(frame, cfg),
         entry_score=entry_score,
+        kick_popup=kick,
         random_tpl=random_score,
         baccarat_card_tpl=baccarat_card_score,
         table_switch=float(sw_meta.get("switch_score", 0.0)),
@@ -355,6 +360,10 @@ def _effective_qipai_tab(f: SceneFeatures) -> tuple[str, list[str]]:
 def resolve_nav_phase(f: SceneFeatures) -> tuple[str, float, list[str]]:
     """固定 UI 決策樹：六段畫面必二選一，不回傳 unknown（無信心門檻）。"""
     reasons: list[str] = []
+
+    if f.kick_popup:
+        reasons.append("決策樹⓪五局提示窗→先點確定")
+        return PHASE_QIPAI_SCROLL, 0.98, reasons
 
     if f.table_switch_ok or f.in_room:
         reasons.append(f"決策樹①牌桌 ({f.in_room_method or 'switch'})")

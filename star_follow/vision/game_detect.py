@@ -170,6 +170,10 @@ def _sidebar_looks_like_qipai_hall(frame: np.ndarray, cfg: AppConfig) -> bool:
 
 def _table_hud_without_ocr(frame: np.ndarray, cfg: AppConfig) -> bool:
     """倒數區有圓形對比 + 底部籌碼列（載入中 OCR 尚未讀到秒數時用）。"""
+    from star_follow.vision.kick_popup import is_kick_idle_popup
+
+    if is_kick_idle_popup(frame, cfg):
+        return False
     if not (_has_countdown_area(frame, cfg) and _has_chip_bar(frame)):
         return False
     return not _sidebar_looks_like_qipai_hall(frame, cfg)
@@ -212,13 +216,20 @@ def detect_in_baccarat_room(
         return True, meta
 
     if _has_chip_bar(frame):
+        from star_follow.vision.nav_scene import measure_table_menu_chart
+
+        menu = measure_table_menu_chart(frame, cfg)
+        has_table_menu = menu >= 0.40
+        has_cd_patch = _has_countdown_area(frame, cfg)
         h, w = frame.shape[:2]
         ref_w = cfg.window.reference_width or 1280
         ref_h = cfg.window.reference_height or 720
         tab_rect = scale_rect(list(_REF_QIPAI_TAB), ref_w, ref_h, w, h)
         tab, purple_r, _ = qipai_sidebar_tab_state(frame, tab_rect)
-        # 首頁底部商城列也會觸發籌碼列特徵
-        if tab == "unselected" and purple_r >= 0.15:
+        # 僅籌碼列（無牌桌選單／倒數／桌號）→ 大廳底部彩色列，不算在房
+        if not (has_table_menu or has_cd_patch or table_no is not None):
+            meta["reason"] = "chip_bar_only"
+        elif tab == "unselected" and purple_r >= 0.15:
             pass
         elif not _sidebar_looks_like_qipai_hall(frame, cfg):
             meta = {"method": "chip_bar"}

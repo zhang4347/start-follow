@@ -63,14 +63,16 @@ def _kick_dialog_visual(frame: np.ndarray, cfg: AppConfig) -> bool:
     hsv_t = cv2.cvtColor(top, cv2.COLOR_RGB2HSV)
     purple = cv2.inRange(hsv_t, np.array([115, 35, 45]), np.array([168, 255, 255]))
     n_top = max(1, top.shape[0] * top.shape[1])
-    if float(purple.sum() / 255 / n_top) < _TITLE_PURPLE_MIN:
-        return False
+    purple_r = float(purple.sum() / 255 / n_top)
     mid = roi[int(bh * 0.10) : int(bh * 0.55), :]
     if mid.size == 0:
         return False
     hsv_m = cv2.cvtColor(mid, cv2.COLOR_RGB2HSV)
     teal = cv2.inRange(hsv_m, np.array([75, 30, 30]), np.array([108, 255, 255]))
-    if float(teal.mean()) / 255.0 < _TEAL_MIN:
+    teal_r = float(teal.mean()) / 255.0
+    if teal_r < _TEAL_MIN:
+        return False
+    if purple_r < _TITLE_PURPLE_MIN and teal_r < 0.18:
         return False
     sub = roi[int(bh * 0.38) :, :]
     if sub.size == 0:

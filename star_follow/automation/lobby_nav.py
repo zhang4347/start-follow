@@ -478,6 +478,32 @@ def try_resolve_table_phase(
     return nav.phase
 
 
+def prepare_for_table_play(
+    win: GameWindow,
+    cfg: AppConfig,
+    capture_fn: Callable[[], np.ndarray],
+    *,
+    max_dismiss: int = 4,
+) -> tuple[bool, str]:
+    """先關五局提示，再確認真的在牌桌（巡房／掛房開統計前必過）。"""
+    for _ in range(max_dismiss):
+        if dismiss_popup_if_any(win, cfg, capture_fn):
+            time.sleep(0.65)
+            continue
+        break
+    frame = capture_fn()
+    if _is_kick_popup_visible(frame, cfg, win):
+        logger.info("畫面仍有五局未押注提示，不可開統計／換桌")
+        return False, PHASE_QIPAI_SCROLL
+    from star_follow.vision.game_detect import detect_in_baccarat_room
+
+    ok, meta = detect_in_baccarat_room(frame, cfg, win)
+    if ok:
+        return True, PHASE_TABLE
+    phase = screen_state_fast_for_engine(frame, cfg, win, capture_fn)
+    return phase == PHASE_TABLE, phase
+
+
 def screen_state_fast_for_engine(
     frame: np.ndarray,
     cfg: AppConfig,
@@ -609,15 +635,6 @@ def dismiss_popup_if_any(
     if kick_click_on_cooldown():
         return True
     frame = capture_fn()
-    from star_follow.vision.game_detect import _table_hud_without_ocr
-
-    if _table_hud_without_ocr(frame, cfg):
-        suppress_kick_visual(nc["kick_visual_suppress_s"])
-        now = time.monotonic()
-        if now - _last_table_hud_skip_log >= _NAV_TABLE_HUD_LOG_INTERVAL:
-            logger.debug("牌桌 HUD 已確認，略過五局提示偵測")
-            _last_table_hud_skip_log = now
-        return False
     if not is_kick_idle_popup(frame, cfg, win=win):
         return False
     xy = _find_popup_confirm_xy(frame, cfg, win)
