@@ -1,6 +1,6 @@
 {
-  "version": "1.2.0",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.0/StarFollow_1.2.0.zip",
-  "sha256": "e1deae126ae34920c2f61d3cc0d7d56cfa3ae874cfa48affcebce45c33d4cb59",
-  "notes": "場景辨識：入口分優先於首頁（隨機選台畫面不再狂點棋牌）；回桌 OCR+14s 點擊冷卻；掛房對象全離桌 TG 後停止"
+  "version": "1.2.1",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.1/StarFollow_1.2.1.zip",
+  "sha256": "08e004fed6fdbf257efc7f6af823e7738e0b0a73d85c107d70e7bec0ef5d0b51",
+  "notes": "場景改決策樹：六段必判其一，移除信心不足 unknown；離線三張標記圖驗證通過"
 }

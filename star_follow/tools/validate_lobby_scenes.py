@@ -60,10 +60,11 @@ def main() -> int:
             ok_all = False
         print(
             f"[{mark}] scene {scene} {row.get('label', '')} → {nav.label} ({nav.phase}) "
-            f"信心={nav.confidence:.0%} tab={nav.qipai_tab} table={nav.table_hud}"
+            f"tab={nav.qipai_tab} table={nav.table_hud}"
         )
-        for r in nav.reasons[:4]:
-            print(f"      {r}")
+        for r in nav.reasons:
+            if r.startswith("決策樹") or r.startswith("兜底") or r.startswith("分頁"):
+                print(f"      {r}")
     return 0 if ok_all else 2
 
 

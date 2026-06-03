@@ -28,8 +28,8 @@ from star_follow.vision.game_detect import (
 )
 from star_follow.vision.nav_scene import (
     SceneFeatures,
-    classify_phase_from_features,
     compute_scene_features,
+    resolve_nav_phase,
 )
 from star_follow.vision.menu_match import match_template_in_region
 from star_follow.vision.roi import scale_point, scale_rect
@@ -274,7 +274,7 @@ def classify_nav_screen(
     *,
     use_ocr: bool | None = None,
 ) -> NavScreenResult:
-    """判斷目前在哪一頁。模板 + 加權分 + 可選 OCR；信心不足則 unknown。"""
+    """判斷目前在哪一頁。決策樹固定分段（六段必其一，不用信心門檻判 unknown）。"""
     sig = _gather_signals(frame, cfg, win)
     nav_cfg = _read_nav_cfg(cfg)
     if use_ocr is None:
@@ -295,9 +295,7 @@ def classify_nav_screen(
         sig["scene"] = scene
 
     phase_scores = dict(scene.phase_scores)
-    phase, confidence = classify_phase_from_features(
-        scene, min_conf=_MIN_CONFIDENCE, min_gap=_AMBIGUOUS_GAP
-    )
+    phase, confidence, tree_reasons = resolve_nav_phase(scene)
 
     in_ok, in_meta = detect_in_baccarat_room(frame, cfg, win)
     override_note = ""
@@ -309,17 +307,9 @@ def classify_nav_screen(
     elif in_ok and phase != PHASE_TABLE:
         override_note = f"在房內覆寫：{phase}→table ({in_meta.get('method', '')})"
         phase = PHASE_TABLE
-        confidence = max(confidence, 0.88)
-    elif (
-        not in_ok
-        and scene.entry_score >= 0.40
-        and phase in (PHASE_HOME, PHASE_UNKNOWN)
-    ):
-        override_note = f"入口分數={scene.entry_score:.2f}→百家樂入口（非首頁）"
-        phase = PHASE_ENTRY
-        confidence = max(confidence, 0.82)
+        confidence = 1.0
 
-    reasons: list[str] = []
+    reasons: list[str] = list(tree_reasons)
     if override_note:
         reasons.append(override_note)
     reasons.extend(
@@ -343,13 +333,6 @@ def classify_nav_screen(
     if phase == PHASE_QIPAI_READY and not _card_ready_valid(sig, cfg, win):
         phase = PHASE_QIPAI_SCROLL
         reasons.append("百家樂模板/位置未達標→改判需滑動")
-
-    scene_feat: SceneFeatures = sig["scene"]
-    if phase == PHASE_ENTRY and not scene_feat.entry_yellow and sig["random_score"] < 0.48 and not sig.get(
-        "ocr_random"
-    ):
-        phase = PHASE_UNKNOWN
-        reasons.append("入口分數偏低→暫不確認")
 
     ocr_out = {}
     if use_ocr:
@@ -411,7 +394,7 @@ def classify_nav_screen_confirmed(
     *,
     force_ocr: bool = False,
 ) -> NavScreenResult:
-    """回桌／點擊前用：連續擷取多張，多數決 + 取信心最高者，減少一幀誤判。"""
+    """回桌前多幀比對；不一致時採最後一幀決策樹（不回傳 unknown）。"""
     nc = _read_nav_cfg(cfg)
     n = nc["samples"]
     votes: list[NavScreenResult] = []
@@ -431,29 +414,12 @@ def classify_nav_screen_confirmed(
     phases = [v.phase for v in votes]
     counts = Counter(phases)
     phase, agree = counts.most_common(1)[0]
-    if agree < nc["min_agree"]:
-        best = min(votes, key=lambda v: (v.confidence, -v.phase_scores.get(v.phase, 0)))
-        best.reasons.append(f"多幀不一致 {dict(counts)}→不執行點擊")
-        return NavScreenResult(
-            phase=PHASE_UNKNOWN,
-            label=_PHASE_LABEL[PHASE_UNKNOWN],
-            action=_PHASE_ACTION[PHASE_UNKNOWN],
-            confidence=0.2,
-            reasons=best.reasons,
-            phase_scores=best.phase_scores,
-        )
     candidates = [v for v in votes if v.phase == phase]
     best = max(candidates, key=lambda v: v.confidence)
-    if best.confidence < nc["min_confidence"]:
-        best.reasons.append(f"多幀同意但信心 {best.confidence:.2f} < {nc['min_confidence']}")
-        return NavScreenResult(
-            phase=PHASE_UNKNOWN,
-            label=_PHASE_LABEL[PHASE_UNKNOWN],
-            action=_PHASE_ACTION[PHASE_UNKNOWN],
-            confidence=best.confidence,
-            reasons=best.reasons,
-            phase_scores=best.phase_scores,
-        )
+    if agree < nc["min_agree"]:
+        best = classify_nav_screen(capture_fn(), cfg, win, use_ocr=True)
+        best.reasons.append(f"多幀不一致 {dict(counts)}→採最後幀決策樹→{best.phase}")
+        return best
     best.reasons.append(f"多幀確認 {agree}/{n} 一致→{phase}")
     return best
 
@@ -823,14 +789,16 @@ def return_to_baccarat_table(
             last_phase = phase
 
         if phase == PHASE_UNKNOWN:
-            stuck += 1
-            if not saved_unknown:
-                _save_unknown_frame(frame, "low_conf")
-                saved_unknown = True
-            if stuck % 3 == 0:
-                logger.info("回桌：信心不足，等待畫面穩定…")
-            time.sleep(0.5)
-            continue
+            nav = classify_nav_screen(frame, cfg, win, use_ocr=True)
+            phase = nav.phase
+            logger.warning("回桌：決策樹不應出現 unknown，重判→%s", nav.label)
+            if phase == PHASE_UNKNOWN:
+                stuck += 1
+                if not saved_unknown:
+                    _save_unknown_frame(frame, "low_conf")
+                    saved_unknown = True
+                time.sleep(0.5)
+                continue
 
         if phase == PHASE_TABLE:
             logger.info("已回到牌桌")

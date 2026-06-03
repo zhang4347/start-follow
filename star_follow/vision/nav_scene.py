@@ -55,6 +55,7 @@ class SceneFeatures:
     table_ui: float = 0.0
     chip_bar: bool = False
     entry_score: float = 0.0
+    highlight_r: float = 0.0
 
     phase_scores: dict[str, float] = field(default_factory=dict)
     reasons: list[str] = field(default_factory=list)
@@ -242,7 +243,7 @@ def compute_scene_features(
     ref_w = cfg.window.reference_width or 1280
     ref_h = cfg.window.reference_height or 720
     tab_rect = scale_rect(list(_REF_QIPAI_TAB), ref_w, ref_h, w, h)
-    tab, purple_r, _ = qipai_sidebar_tab_state(frame, tab_rect)
+    tab, purple_r, highlight_r = qipai_sidebar_tab_state(frame, tab_rect)
 
     sw_ok, sw_meta = detect_room_switch_button(frame, cfg)
     in_room, room_meta = detect_in_baccarat_room(frame, cfg, win)
@@ -258,6 +259,7 @@ def compute_scene_features(
     f = SceneFeatures(
         card_row=card_row,
         home_purple=purple_r,
+        highlight_r=highlight_r,
         qipai_tab=tab,
         entry_yellow=is_lobby(frame, cfg),
         entry_score=entry_score,
@@ -318,22 +320,81 @@ def _score_phases(f: SceneFeatures) -> tuple[dict[str, float], list[str]]:
     return s, reasons
 
 
-def classify_phase_from_features(f: SceneFeatures, *, min_conf: float = 0.48, min_gap: float = 0.10) -> tuple[str, float]:
-    ranked = sorted(f.phase_scores.items(), key=lambda x: -x[1])
-    phase, top = ranked[0]
-    second = ranked[1][1] if len(ranked) > 1 else 0.0
-    total = sum(f.phase_scores.values()) or 1.0
-    conf = top / total
-    if top < min_conf or (top - second) < min_gap:
-        return PHASE_UNKNOWN, min(conf, 0.35)
-    if phase == PHASE_TABLE and not (f.table_switch_ok or f.in_room):
-        return PHASE_UNKNOWN, 0.3
-    if phase in (PHASE_QIPAI_SCROLL, PHASE_QIPAI_READY) and f.qipai_tab != "selected":
-        return PHASE_UNKNOWN, 0.3
-    if phase == PHASE_HOME and f.qipai_tab != "unselected":
-        return PHASE_UNKNOWN, 0.3
-    if phase == PHASE_ENTRY and f.entry_score < 0.32 and f.random_tpl < 0.35 and not f.entry_yellow:
-        return PHASE_UNKNOWN, 0.3
-    if phase == PHASE_HOME and f.entry_score >= 0.40:
-        return PHASE_ENTRY, max(conf, 0.75)
+def _entry_like(f: SceneFeatures) -> bool:
+    return (
+        f.entry_score >= 0.40
+        or f.entry_yellow
+        or f.random_tpl >= 0.35
+        or (
+            f.table_countdown >= 0.50
+            and not f.chip_bar
+            and f.table_menu_chart < 0.42
+        )
+    )
+
+
+def _effective_qipai_tab(f: SceneFeatures) -> tuple[str, list[str]]:
+    """分頁顏色常回 unclear；用牌列／紫／高亮補足，避免判成 unknown。"""
+    notes: list[str] = []
+    tab = f.qipai_tab
+    if tab != "unclear":
+        return tab, notes
+    if f.card_row >= 0.40 or f.baccarat_card_tpl >= 0.38:
+        notes.append("分頁unclear→牌列/百家樂模板→棋牌已選")
+        return "selected", notes
+    if f.highlight_r >= 0.08 and f.home_purple < 0.14:
+        notes.append("分頁unclear→高亮→棋牌已選")
+        return "selected", notes
+    if f.home_purple >= 0.16 and f.highlight_r < 0.10:
+        notes.append("分頁unclear→紫色→首頁未選")
+        return "unselected", notes
+    notes.append("分頁unclear→預設棋牌已選(已過首頁)")
+    return "selected", notes
+
+
+def resolve_nav_phase(f: SceneFeatures) -> tuple[str, float, list[str]]:
+    """固定 UI 決策樹：六段畫面必二選一，不回傳 unknown（無信心門檻）。"""
+    reasons: list[str] = []
+
+    if f.table_switch_ok or f.in_room:
+        reasons.append(f"決策樹①牌桌 ({f.in_room_method or 'switch'})")
+        return PHASE_TABLE, 1.0, reasons
+
+    if _entry_like(f):
+        reasons.append(
+            f"決策樹②入口 entry={f.entry_score:.2f} 黃={f.entry_yellow} random={f.random_tpl:.2f}"
+        )
+        return PHASE_ENTRY, 0.95, reasons
+
+    tab, tab_notes = _effective_qipai_tab(f)
+    reasons.extend(tab_notes)
+
+    if tab == "selected":
+        if f.baccarat_card_tpl >= 0.48 or f.card_row >= 0.40:
+            reasons.append(
+                f"決策樹③棋牌可點百家樂 card_tpl={f.baccarat_card_tpl:.2f} 牌列={f.card_row:.2f}"
+            )
+            return PHASE_QIPAI_READY, 0.92, reasons
+        reasons.append("決策樹④棋牌大廳需滑動")
+        return PHASE_QIPAI_SCROLL, 0.90, reasons
+
+    if tab == "unselected":
+        reasons.append(f"決策樹⑤首頁 purple={f.home_purple:.2f}")
+        return PHASE_HOME, 0.90, reasons
+
+    if f.card_row >= 0.35:
+        reasons.append("兜底→棋牌滑動(牌列)")
+        return PHASE_QIPAI_SCROLL, 0.82, reasons
+    if f.entry_score >= 0.28:
+        reasons.append("兜底→入口")
+        return PHASE_ENTRY, 0.80, reasons
+    reasons.append("兜底→首頁")
+    return PHASE_HOME, 0.78, reasons
+
+
+def classify_phase_from_features(
+    f: SceneFeatures, *, min_conf: float = 0.48, min_gap: float = 0.10
+) -> tuple[str, float]:
+    """相容舊呼叫；實際用 resolve_nav_phase（忽略 min_conf / min_gap）。"""
+    phase, conf, _ = resolve_nav_phase(f)
     return phase, conf
