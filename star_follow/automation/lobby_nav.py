@@ -15,7 +15,6 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-import cv2
 import numpy as np
 
 from star_follow.automation.click import click_at, drag_client
@@ -299,7 +298,12 @@ def classify_nav_screen(
 
     in_ok, in_meta = detect_in_baccarat_room(frame, cfg, win)
     override_note = ""
-    if in_ok and phase != PHASE_TABLE:
+    if _is_kick_popup_visible(frame, cfg, win):
+        if phase == PHASE_TABLE:
+            phase = PHASE_QIPAI_SCROLL
+            override_note = "五局提示窗→不算牌桌"
+        in_ok = False
+    elif in_ok and phase != PHASE_TABLE:
         override_note = f"在房內覆寫：{phase}→table ({in_meta.get('method', '')})"
         phase = PHASE_TABLE
         confidence = max(confidence, 0.88)
@@ -453,6 +457,8 @@ def try_resolve_table_phase(
 ) -> str:
     """判成棋牌大廳／未知時，短等倒數或桌號出現，避免局間誤回大廳滑動。"""
     frame = capture_fn()
+    if _is_kick_popup_visible(frame, cfg, win):
+        return PHASE_QIPAI_SCROLL
     nav = classify_nav_screen(frame, cfg, win, use_ocr=False)
     if nav.phase == PHASE_TABLE:
         return PHASE_TABLE
@@ -476,6 +482,8 @@ def try_resolve_table_phase(
     while time.monotonic() < deadline:
         time.sleep(poll_s)
         frame = capture_fn()
+        if _is_kick_popup_visible(frame, cfg, win):
+            return PHASE_QIPAI_SCROLL
         ok, meta = detect_in_baccarat_room(frame, cfg, win)
         if ok:
             logger.info("短等後確認在牌桌（%s）", meta.get("method", ""))
@@ -562,69 +570,37 @@ def _confirm_dialog_rect(cfg: AppConfig, win: GameWindow) -> tuple[int, int, int
 def _is_kick_popup_visible(
     frame: np.ndarray, cfg: AppConfig, win: GameWindow
 ) -> bool:
-    """「超過五局未押注，已退出遊戲」居中提示窗（青綠底 + 下方綠色確定鈕）。"""
-    x, y, bw, bh = _confirm_dialog_rect(cfg, win)
-    roi = frame[y : y + bh, x : x + bw]
-    if roi.size == 0:
-        return False
-    hit = _match_score(frame, win, _T_CONFIRM, (x, y, bw, bh), cfg)
-    if hit and hit[2] >= _THR_CONFIRM:
-        return True
-    mid = roi[int(bh * 0.10) : int(bh * 0.52), :]
-    if mid.size == 0:
-        return False
-    hsv = cv2.cvtColor(mid, cv2.COLOR_RGB2HSV)
-    teal = cv2.inRange(hsv, np.array([75, 35, 35]), np.array([105, 255, 255]))
-    if float(teal.mean()) / 255.0 < 0.22:
-        return False
-    sub = roi[int(bh * 0.40) :, :]
-    hsv2 = cv2.cvtColor(sub, cv2.COLOR_RGB2HSV)
-    green = cv2.inRange(hsv2, np.array([32, 70, 70]), np.array([92, 255, 255]))
-    return int(green.sum() / 255) >= 380
+    from star_follow.vision.kick_popup import is_kick_idle_popup
+
+    return is_kick_idle_popup(frame, cfg, win=win)
 
 
 def _find_popup_confirm_xy(
     frame: np.ndarray, cfg: AppConfig, win: GameWindow
 ) -> tuple[int, int] | None:
-    pt = cfg.click_points.get("kick_idle_confirm")
-    if pt and len(pt) == 2:
-        return _scaled_pt(cfg, win, (int(pt[0]), int(pt[1])))
-    rect = _confirm_dialog_rect(cfg, win)
-    hit = _match_score(frame, win, _T_CONFIRM, rect, cfg)
-    if hit and hit[2] >= _THR_CONFIRM:
-        return int(hit[0]), int(hit[1])
-    x, y, bw, bh = rect
-    roi = frame[y : y + bh, x : x + bw]
-    sub = roi[int(bh * 0.40) :, :]
-    if sub.size == 0:
-        return _scaled_pt(cfg, win, _REF_CONFIRM_PT)
-    hsv = cv2.cvtColor(sub, cv2.COLOR_RGB2HSV)
-    green = cv2.inRange(hsv, np.array([32, 70, 70]), np.array([92, 255, 255]))
-    ys, xs = np.where(green > 0)
-    if xs.size < 120:
-        return _scaled_pt(cfg, win, _REF_CONFIRM_PT)
-    cx = int(xs.mean())
-    cy = int(ys.mean()) + int(bh * 0.40)
-    return x + cx, y + cy
+    from star_follow.vision.kick_popup import find_kick_confirm_xy
+
+    return find_kick_confirm_xy(frame, cfg, win)
 
 
 def dismiss_popup_if_any(
     win: GameWindow, cfg: AppConfig, capture_fn: Callable[[], np.ndarray]
 ) -> bool:
-    """關閉『超過五局未押注』等居中提示（模板或青綠對話框 + 綠色確定）。"""
-    dismissed = False
-    for _ in range(3):
-        frame = capture_fn()
-        if not _is_kick_popup_visible(frame, cfg, win):
-            break
-        xy = _find_popup_confirm_xy(frame, cfg, win)
-        if not xy:
-            break
-        logger.info("偵測到五局未押注提示，點『確定』(%d,%d)", xy[0], xy[1])
-        click_at(win, xy[0], xy[1], backend=cfg.automation.ui_click_backend)
-        time.sleep(0.75)
-        dismissed = True
-    return dismissed
+    """關閉『超過五局未押注』提示（須 OCR 關鍵字或確定鈕模板高分才點）。"""
+    frame = capture_fn()
+    if not _is_kick_popup_visible(frame, cfg, win):
+        return False
+    xy = _find_popup_confirm_xy(frame, cfg, win)
+    if not xy:
+        logger.warning("五局提示 OCR 已命中但找不到確定座標，略過點擊")
+        return False
+    logger.info("偵測到五局未押注提示，點『確定』(%d,%d)", xy[0], xy[1])
+    click_at(win, xy[0], xy[1], backend=cfg.automation.ui_click_backend)
+    time.sleep(0.85)
+    if not _is_kick_popup_visible(capture_fn(), cfg, win):
+        return True
+    logger.warning("點過確定後仍偵測到五局提示，不再連點（避免誤判狂點）")
+    return True
 
 
 def _find_card(

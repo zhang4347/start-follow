@@ -175,6 +175,16 @@ def detect_in_baccarat_room(
         meta["reason"] = "entry_yellow"
         return False, meta
 
+    from star_follow.vision.kick_popup import is_kick_idle_popup
+
+    if is_kick_idle_popup(frame, cfg, win=win):
+        meta["reason"] = "kick_popup"
+        return False, meta
+
+    if _sidebar_looks_like_qipai_hall(frame, cfg):
+        meta["reason"] = "qipai_hall"
+        return False, meta
+
     sw_ok, sw_meta = detect_room_switch_button(frame, cfg)
     if sw_ok:
         meta = {"method": "room_switch", **sw_meta}
@@ -203,24 +213,7 @@ def detect_in_baccarat_room(
             meta = {"method": "chip_bar"}
             return True, meta
 
-    menu = 0.0
-    h, w = frame.shape[:2]
-    ref_w = cfg.window.reference_width or 1280
-    ref_h = cfg.window.reference_height or 720
-    roi = cfg.roi.get("menu_button")
-    rect = (
-        scale_rect(roi, ref_w, ref_h, w, h)
-        if roi and len(roi) == 4
-        else scale_rect((1175, 18, 95, 95), ref_w, ref_h, w, h)
-    )
-    for name in ("menu_chart.png", "menu_chart_crop.png"):
-        hit = match_template_in_region(frame, name, rect, threshold=0.0)
-        if hit:
-            menu = max(menu, float(hit[2]))
-    if menu >= 0.42 and not _sidebar_looks_like_qipai_hall(frame, cfg):
-        meta = {"method": "menu_chart", "menu_score": menu}
-        return True, meta
-
+    # 右上 ☰ 柱狀圖與棋牌大廳頂欄太像，不再單獨當「在房內」依據
     return False, meta
 
 

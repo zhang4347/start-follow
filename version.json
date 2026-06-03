@@ -1,6 +1,6 @@
 {
-  "version": "1.1.6",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.1.6/StarFollow_1.1.6.zip",
-  "sha256": "e00b31b5d5142449405ec0866ce95cf89be4a35fdf34f38c17dbd89f6a8d0fff",
-  "notes": "大廳回桌辨識重做：首頁/棋牌/入口/牌桌五段分清楚，不再一啟動就判已在牌桌；進桌後等倒數/桌號/籌碼確認在房內，局間短等避免誤滑棋牌大廳；五局未押注提示自動點確定(支援 kick_idle_confirm 標點)；大廳模板從標記圖重新裁切"
+  "version": "1.1.7",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.1.7/StarFollow_1.1.7.zip",
+  "sha256": "bdb0b1d0fc94def43bb000d8769d146ab0c2473fc9fee47877c6892e5af97b60",
+  "notes": "修正五局未押注提示：僅 OCR/模板命中才點確定，不再狂點；有提示或棋牌大廳時不算在牌桌內，換房不會誤開統計"
 }
