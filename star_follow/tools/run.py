@@ -550,9 +550,15 @@ def main() -> int:
         tgt = engine.cfg.room.stay_targets or fl.active()
         print(f"掛房追蹤對象：{('、'.join(tgt) if tgt else '（無）')}")
         if engine.cfg.room.stay_pause_when_targets_absent:
-            print(
-                f"對象全離桌偵測：連續 {engine.cfg.room.stay_absent_rounds_to_pause} 局都讀不到任何對象 → 暫停跟注、不回桌"
-            )
+            n = engine.cfg.room.stay_absent_rounds_to_pause
+            if getattr(engine.cfg.room, "stay_stop_when_targets_absent", True):
+                print(
+                    f"對象全離桌偵測：連續 {n} 局統計表都讀不到任何對象 → Telegram 通知後停止程式"
+                )
+            else:
+                print(
+                    f"對象全離桌偵測：連續 {n} 局都讀不到任何對象 → 暫停跟注、不回桌"
+                )
     if engine.dry_run:
         print("真下注：python -m star_follow.tools.run --live")
         print("標記籌碼：python -m star_follow.tools.mark_chips")

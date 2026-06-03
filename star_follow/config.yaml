@@ -74,7 +74,7 @@ room:
   stay_table: 0
   stay_targets: []
   stay_pause_when_targets_absent: true
-  stay_absent_rounds_to_pause: 3
+  stay_absent_rounds_to_pause: 1
   stay_stop_when_targets_absent: true
 betting:
   follow_exclude:
@@ -289,5 +289,6 @@ nav_confirm:
   enter_table_log_interval_s: 7
   kick_dismiss_cooldown_s: 12
   kick_visual_suppress_s: 18
+  engine_nav_interval_s: 1.5
   not_table_grace_s: 10
   not_table_poll_s: 0.4

@@ -478,6 +478,25 @@ def try_resolve_table_phase(
     return nav.phase
 
 
+def screen_state_fast_for_engine(
+    frame: np.ndarray,
+    cfg: AppConfig,
+    win: GameWindow,
+    capture_fn: Callable[[], np.ndarray] | None = None,
+) -> str:
+    """引擎用輕量版：先牌桌 HUD／在房，非牌桌才跑完整 classify。"""
+    if _is_kick_popup_visible(frame, cfg, win):
+        return PHASE_QIPAI_SCROLL
+    from star_follow.vision.game_detect import _table_hud_without_ocr, detect_in_baccarat_room
+
+    if _table_hud_without_ocr(frame, cfg):
+        return PHASE_TABLE
+    ok, _meta = detect_in_baccarat_room(frame, cfg, win)
+    if ok:
+        return PHASE_TABLE
+    return classify_nav_screen(frame, cfg, win, use_ocr=False).phase
+
+
 def screen_state_for_engine(
     frame: np.ndarray,
     cfg: AppConfig,
@@ -570,10 +589,15 @@ def _find_popup_confirm_xy(
     return find_kick_confirm_xy(frame, cfg, win)
 
 
+_NAV_TABLE_HUD_LOG_INTERVAL = 60.0
+_last_table_hud_skip_log = 0.0
+
+
 def dismiss_popup_if_any(
     win: GameWindow, cfg: AppConfig, capture_fn: Callable[[], np.ndarray]
 ) -> bool:
     """關閉『超過五局未押注』提示（OCR／模板優先；點一次後冷卻，避免牌桌誤判連點）。"""
+    global _last_table_hud_skip_log
     from star_follow.vision.kick_popup import (
         is_kick_idle_popup,
         kick_click_on_cooldown,
@@ -585,13 +609,16 @@ def dismiss_popup_if_any(
     if kick_click_on_cooldown():
         return True
     frame = capture_fn()
-    if not is_kick_idle_popup(frame, cfg, win=win):
-        return False
     from star_follow.vision.game_detect import _table_hud_without_ocr
 
     if _table_hud_without_ocr(frame, cfg):
         suppress_kick_visual(nc["kick_visual_suppress_s"])
-        logger.info("牌桌倒數+籌碼列已出現，略過五局提示點擊（避免牌桌誤判）")
+        now = time.monotonic()
+        if now - _last_table_hud_skip_log >= _NAV_TABLE_HUD_LOG_INTERVAL:
+            logger.debug("牌桌 HUD 已確認，略過五局提示偵測")
+            _last_table_hud_skip_log = now
+        return False
+    if not is_kick_idle_popup(frame, cfg, win=win):
         return False
     xy = _find_popup_confirm_xy(frame, cfg, win)
     if not xy:

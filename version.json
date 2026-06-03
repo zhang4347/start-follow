@@ -1,6 +1,6 @@
 {
-  "version": "1.2.1",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.1/StarFollow_1.2.1.zip",
-  "sha256": "08e004fed6fdbf257efc7f6af823e7738e0b0a73d85c107d70e7bec0ef5d0b51",
-  "notes": "場景改決策樹：六段必判其一，移除信心不足 unknown；離線三張標記圖驗證通過"
+  "version": "1.2.2",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.2/StarFollow_1.2.2.zip",
+  "sha256": "ea74d11a89be4195ee0a72c9cc0491fd75601c16ef231d01a51e29f2bee001ea",
+  "notes": "掛房：1局無對象即TG+停止；局內跳過大廳導覽加速定稿；五局提示先判牌桌HUD"
 }

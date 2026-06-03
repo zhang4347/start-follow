@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -103,6 +104,9 @@ class FollowEngine:
         self._stay_at_table_grace_until = 0.0
         self._last_idle_wait_log_mono = 0.0
         self._win_logged = False
+        self._last_nav_check_mono = 0.0
+        self._cached_screen = "table"
+        self._last_kick_check_mono = 0.0
         # 換房模式狀態
         self._patrol_current: int | None = None
         self._patrol_visited: set[int] = set()
@@ -990,16 +994,19 @@ class FollowEngine:
         need = max(1, self.cfg.room.stay_absent_rounds_to_pause)
         if self._stay_absent_streak >= need and not self._stay_paused:
             self._stay_paused = True
-            msg = f"{table_tag} 已無任何追蹤對象"
+            msg = f"{table_tag} 統計表未見任何追蹤對象"
+            if not self._stay_pause_notified:
+                self._stay_pause_notified = True
+                if getattr(self.cfg.room, "stay_stop_when_targets_absent", True):
+                    self._notify_targets_gone(f"{msg}，程式即將停止")
+                else:
+                    self._notify_targets_gone(f"{msg}，暫停跟注")
             if getattr(self.cfg.room, "stay_stop_when_targets_absent", True):
                 logger.warning(
-                    "連續 %d 局都沒有任何指定對象在%s → 發送通知後停止程式",
+                    "連續 %d 局都沒有任何指定對象在%s → 停止程式",
                     self._stay_absent_streak,
                     table_tag,
                 )
-                if not self._stay_pause_notified:
-                    self._stay_pause_notified = True
-                    self._notify_targets_gone(f"{msg}，程式即將停止")
                 self.stop()
                 return
             logger.warning(
@@ -1007,9 +1014,6 @@ class FollowEngine:
                 self._stay_absent_streak,
                 table_tag,
             )
-            if not self._stay_pause_notified:
-                self._stay_pause_notified = True
-                self._notify_targets_gone(f"{msg}，暫停跟注")
 
     def _maybe_anti_kick(self, frame, t_bet: int | None, cd_color: CountdownColor) -> bool:
         """掛房防踢：連續多局沒下注時，自己補一手最小注（莊/閒）避免被系統踢出。
@@ -1044,6 +1048,46 @@ class FollowEngine:
         self._ui_fail_streak = 0
         return True
 
+    def _in_active_betting_phase(self) -> bool:
+        return self.phase in (Phase.BET_OPEN, Phase.STATS_READY, Phase.LOCKED)
+
+    def _lobby_nav_interval_s(self) -> float:
+        raw = self.cfg.raw.get("nav_confirm")
+        if isinstance(raw, dict):
+            return float(raw.get("engine_nav_interval_s", 1.5))
+        return 1.5
+
+    def _engine_lobby_check(
+        self, win, frame, cap: Callable
+    ) -> tuple[bool, str]:
+        """回傳 (是否 early-return, screen)。局內跳過大廳導覽以保 T 軸速度。"""
+        from star_follow.automation import lobby_nav
+
+        if self._in_active_betting_phase():
+            return False, "table"
+
+        now = time.monotonic()
+        if now < self._stay_at_table_grace_until:
+            return False, "table"
+
+        interval = self._lobby_nav_interval_s()
+        if (
+            self._cached_screen == "table"
+            and now - self._last_nav_check_mono < interval
+        ):
+            return False, "table"
+
+        if now - self._last_kick_check_mono >= 2.0:
+            self._last_kick_check_mono = now
+            if lobby_nav.dismiss_popup_if_any(win, self.cfg, cap):
+                return True, self._cached_screen
+
+        frame = capture_client(win)
+        screen = lobby_nav.screen_state_fast_for_engine(frame, self.cfg, win, cap)
+        self._last_nav_check_mono = now
+        self._cached_screen = screen
+        return False, screen
+
     def run_once(self) -> bool:
         win = self._find_game()
         if not win:
@@ -1069,10 +1113,9 @@ class FollowEngine:
         from star_follow.automation import lobby_nav
 
         cap = lambda: capture_client(win)
-        if lobby_nav.dismiss_popup_if_any(win, self.cfg, cap):
+        early, screen = self._engine_lobby_check(win, frame, cap)
+        if early:
             return True
-        frame = capture_client(win)
-        screen = lobby_nav.screen_state_for_engine(frame, self.cfg, win, cap)
         if screen != "table" and time.monotonic() < self._stay_at_table_grace_until:
             return True
         if screen != "table":
