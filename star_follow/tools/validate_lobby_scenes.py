@@ -64,7 +64,9 @@ def main() -> int:
         )
         for r in nav.reasons:
             if r.startswith("決策樹") or r.startswith("兜底") or r.startswith("分頁"):
-                print(f"      {r}")
+                # Windows 主控台 cp950 無法印出 ⓪ 等符號
+                safe = r.encode("cp950", errors="replace").decode("cp950")
+                print(f"      {safe}")
     return 0 if ok_all else 2
 
 
