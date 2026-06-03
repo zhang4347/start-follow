@@ -1,6 +1,6 @@
 {
-  "version": "1.1.7",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.1.7/StarFollow_1.1.7.zip",
-  "sha256": "bdb0b1d0fc94def43bb000d8769d146ab0c2473fc9fee47877c6892e5af97b60",
-  "notes": "修正五局未押注提示：僅 OCR/模板命中才點確定，不再狂點；有提示或棋牌大廳時不算在牌桌內，換房不會誤開統計"
+  "version": "1.1.8",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.1.8/StarFollow_1.1.8.zip",
+  "sha256": "7feac555e9f710de0a78e69e5ad4ced2c050a1da6c52bc9ce25e285ee21e2e3f",
+  "notes": "五局未押注提示：OCR 失敗時改視覺辨識（青綠底+確定鈕），有提示一律不算在房內、會先點確定；回桌滑動縮短；進桌後 15 秒 grace；棋牌大廳否決順序修正"
 }

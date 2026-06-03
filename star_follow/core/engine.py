@@ -100,6 +100,7 @@ class FollowEngine:
         self._last_stay_pause_log_mono = 0.0
         self._stopped_reason: str | None = None
         self._last_lobby_log_mono = 0.0
+        self._stay_at_table_grace_until = 0.0
         self._last_idle_wait_log_mono = 0.0
         self._win_logged = False
         # 換房模式狀態
@@ -967,7 +968,8 @@ class FollowEngine:
         self.ctx = RoundContext()
         self._cd_tracker.reset()
         self._stay_idle_rounds = 0
-        logger.info("掛房已回到牌桌，恢復跟注")
+        self._stay_at_table_grace_until = time.monotonic() + 15.0
+        logger.info("掛房已回到牌桌，恢復跟注（15s 內不因畫面閃爍重跑回桌）")
         return True
 
     def _update_stay_presence(self) -> None:
@@ -1059,6 +1061,8 @@ class FollowEngine:
             return True
         frame = capture_client(win)
         screen = lobby_nav.screen_state_for_engine(frame, self.cfg, win, cap)
+        if screen != "table" and time.monotonic() < self._stay_at_table_grace_until:
+            return True
         if screen != "table":
             if self.phase != Phase.IDLE:
                 self.phase = Phase.IDLE

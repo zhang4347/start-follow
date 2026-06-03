@@ -153,15 +153,17 @@ def _read_valid_table_no(
 
 
 def _sidebar_looks_like_qipai_hall(frame: np.ndarray, cfg: AppConfig) -> bool:
-    """右側棋牌分頁亮起，且沒有任何牌桌內特徵（避免在牌桌誤判成大廳）。"""
+    """右側棋牌分頁明顯亮起（金/亮占比夠高），且非入口黃字畫面。"""
     if is_lobby(frame):
         return False
     h, w = frame.shape[:2]
     ref_w = cfg.window.reference_width or 1280
     ref_h = cfg.window.reference_height or 720
     tab_rect = scale_rect(list(_REF_QIPAI_TAB), ref_w, ref_h, w, h)
-    tab, _, _ = qipai_sidebar_tab_state(frame, tab_rect)
-    return tab == "selected"
+    tab, purple_r, highlight_r = qipai_sidebar_tab_state(frame, tab_rect)
+    if tab != "selected":
+        return False
+    return highlight_r >= 0.10 and purple_r < 0.16
 
 
 def detect_in_baccarat_room(
@@ -181,10 +183,7 @@ def detect_in_baccarat_room(
         meta["reason"] = "kick_popup"
         return False, meta
 
-    if _sidebar_looks_like_qipai_hall(frame, cfg):
-        meta["reason"] = "qipai_hall"
-        return False, meta
-
+    # 先確認牌桌特徵；牌桌畫面右側常誤判「棋牌已選中」，不可先否決
     sw_ok, sw_meta = detect_room_switch_button(frame, cfg)
     if sw_ok:
         meta = {"method": "room_switch", **sw_meta}
@@ -213,7 +212,10 @@ def detect_in_baccarat_room(
             meta = {"method": "chip_bar"}
             return True, meta
 
-    # 右上 ☰ 柱狀圖與棋牌大廳頂欄太像，不再單獨當「在房內」依據
+    if _sidebar_looks_like_qipai_hall(frame, cfg):
+        meta["reason"] = "qipai_hall"
+        return False, meta
+
     return False, meta
 
 

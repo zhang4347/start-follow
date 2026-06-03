@@ -84,6 +84,8 @@ _THR_QIPAI_MENU = 0.55
 _MIN_CONFIDENCE = 0.50
 _AMBIGUOUS_GAP = 0.12
 _QIPAI_ENTER_GRACE_S = 14.0
+_SCROLL_MAX_DRAGS = 4
+_SCROLL_MAX_ROUNDS = 2
 
 # OCR 裁切區（1280×720）：關鍵字當模板外的第二證據
 _RECT_OCR_CARDS = (160, 290, 960, 300)
@@ -502,7 +504,12 @@ def screen_state_for_engine(
     win: GameWindow,
     capture_fn: Callable[[], np.ndarray],
 ) -> str:
-    """引擎用：先單幀判斷；若像棋牌大廳則短等再確認是否在房內。"""
+    """引擎用：五局提示優先排除；在房內特徵次之。"""
+    if _is_kick_popup_visible(frame, cfg, win):
+        return PHASE_QIPAI_SCROLL
+    ok, meta = detect_in_baccarat_room(frame, cfg, win)
+    if ok:
+        return PHASE_TABLE
     nc = _read_nav_cfg(cfg)
     phase = classify_nav_screen(frame, cfg, win, use_ocr=False).phase
     if phase == PHASE_TABLE:
@@ -586,13 +593,13 @@ def _find_popup_confirm_xy(
 def dismiss_popup_if_any(
     win: GameWindow, cfg: AppConfig, capture_fn: Callable[[], np.ndarray]
 ) -> bool:
-    """關閉『超過五局未押注』提示（須 OCR 關鍵字或確定鈕模板高分才點）。"""
+    """關閉『超過五局未押注』提示（OCR／視覺／模板命中才點一次確定）。"""
     frame = capture_fn()
     if not _is_kick_popup_visible(frame, cfg, win):
         return False
     xy = _find_popup_confirm_xy(frame, cfg, win)
     if not xy:
-        logger.warning("五局提示 OCR 已命中但找不到確定座標，略過點擊")
+        logger.warning("五局提示已偵測但找不到確定座標，略過點擊")
         return False
     logger.info("偵測到五局未押注提示，點『確定』(%d,%d)", xy[0], xy[1])
     click_at(win, xy[0], xy[1], backend=cfg.automation.ui_click_backend)
@@ -613,7 +620,11 @@ def _find_card(
 
 
 def _scroll_right_find_card(
-    win: GameWindow, cfg: AppConfig, capture_fn: Callable[[], np.ndarray], *, max_drags: int = 12
+    win: GameWindow,
+    cfg: AppConfig,
+    capture_fn: Callable[[], np.ndarray],
+    *,
+    max_drags: int = _SCROLL_MAX_DRAGS,
 ) -> tuple[int, int, float] | None:
     w, h = win.client_width, win.client_height
     y = int(h * 0.42)
@@ -719,6 +730,8 @@ def return_to_baccarat_table(
     deadline = time.monotonic() + timeout_s
     last_phase = ""
     qipai_enter_mono: float | None = None
+    scroll_rounds = 0
+    backup_card_tried = False
     stuck = 0
     saved_unknown = False
 
@@ -786,15 +799,32 @@ def return_to_baccarat_table(
             qipai_enter_mono is not None
             and (time.monotonic() - qipai_enter_mono) < _QIPAI_ENTER_GRACE_S
         ):
+            if not backup_card_tried:
+                backup_card_tried = True
+                fx, fy = _scaled_pt(cfg, win, _REF_PT_CARD)
+                logger.info("棋牌大廳 → 先點備援百家樂 (%d,%d)（不滑動）", fx, fy)
+                _click_card_at(win, cfg, (fx, fy), tag="備援先不滑")
+                time.sleep(2.0)
+                continue
+            if scroll_rounds >= _SCROLL_MAX_ROUNDS:
+                fx, fy = _scaled_pt(cfg, win, _REF_PT_CARD)
+                logger.warning("已滑動 %d 輪仍無模板，再點備援 (%d,%d)", scroll_rounds, fx, fy)
+                _click_card_at(win, cfg, (fx, fy), tag="備援")
+                qipai_enter_mono = None
+                time.sleep(2.0)
+                continue
+            scroll_rounds += 1
+            logger.info("棋牌大廳滑動第 %d/%d 輪（每輪最多 %d 次拖曳）", scroll_rounds, _SCROLL_MAX_ROUNDS, _SCROLL_MAX_DRAGS)
             card = _scroll_right_find_card(win, cfg, cap)
             if card:
                 _click_card_at(win, cfg, (card[0], card[1]), tag=f"滑動後 score={card[2]:.2f}")
                 qipai_enter_mono = None
             else:
                 fx, fy = _scaled_pt(cfg, win, _REF_PT_CARD)
-                logger.warning("滑動後仍找不到百家樂模板，嘗試備援座標 (%d,%d)", fx, fy)
+                logger.warning("本輪滑動未中模板，點備援 (%d,%d)", fx, fy)
                 _click_card_at(win, cfg, (fx, fy), tag="備援")
                 qipai_enter_mono = None
+            time.sleep(1.5)
             continue
 
         if phase == PHASE_HOME:
