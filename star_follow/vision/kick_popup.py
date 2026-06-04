@@ -17,6 +17,9 @@ _REF_DIALOG = (380, 370, 520, 290)
 _REF_MSG_OCR = (300, 385, 680, 150)
 _MSG_KEYS = ("五局", "未押注", "退出遊戲", "退出", "未押")
 _THR_TEMPLATE = 0.58
+# 高信心門檻：確定鈕模板達此分數即採信，即使畫面像牌桌也算彈窗。
+# 實測：真實牌桌僅 ~0.38，彈窗達 1.000，故 0.80 既可靠又零誤判。
+_THR_TEMPLATE_STRICT = 0.80
 _TEAL_MIN = 0.14
 _GREEN_MIN = 280
 _TITLE_PURPLE_MIN = 0.032
@@ -113,15 +116,20 @@ def is_kick_idle_popup(
     *,
     win: object | None = None,
 ) -> bool:
-    """五局未押注提示窗：OCR、紫標題+青綠視覺、或確定鈕模板。"""
+    """五局未押注提示窗：OCR、確定鈕模板（高信心可跨牌桌）、紫標題+青綠視覺。"""
     hit, _text = kick_popup_message_ocr(frame, cfg)
     if hit:
         return True
-    if _kick_requires_ocr_only(frame, cfg, win):
-        return False
+    # 確定鈕模板：先算一次分數。高信心（彈窗常蓋在牌桌上，OCR 可能讀不到字）
+    # 即使畫面像牌桌也採信——實測真實牌桌僅 ~0.38，彈窗 1.000。
     x, y, bw, bh = _dialog_rect(frame, cfg)
     tpl = match_template_in_region(frame, _T_CONFIRM, (x, y, bw, bh), threshold=0.0)
-    if tpl and float(tpl[2]) >= _THR_TEMPLATE:
+    tpl_score = float(tpl[2]) if tpl else 0.0
+    if tpl_score >= _THR_TEMPLATE_STRICT:
+        return True
+    if _kick_requires_ocr_only(frame, cfg, win):
+        return False
+    if tpl_score >= _THR_TEMPLATE:
         return True
     if _kick_dialog_visual(frame, cfg):
         return True
