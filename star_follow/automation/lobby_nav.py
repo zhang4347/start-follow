@@ -184,8 +184,6 @@ def _gather_signals(frame: np.ndarray, cfg: AppConfig, win: GameWindow) -> dict:
     """收集各模板最佳分數與特徵（門檻 0，僅用於分類）。"""
     full = _full_rect(win)
     random_r = _match_score(frame, win, _T_RANDOM, _scaled_rect(cfg, win, _RECT_RANDOM), cfg)
-    random_w = _match_score(frame, win, _T_RANDOM, full, cfg)
-    card_w = _match_score(frame, win, _T_CARD, full, cfg)
     menu_r = _match_score(frame, win, _T_QIPAI, _scaled_rect(cfg, win, _RECT_QIPAI), cfg)
     confirm = _match_score(frame, win, _T_CONFIRM, _scaled_rect(cfg, win, _RECT_CONFIRM), cfg)
 
@@ -194,6 +192,11 @@ def _gather_signals(frame: np.ndarray, cfg: AppConfig, win: GameWindow) -> dict:
 
     tab_rect = _scaled_rect(cfg, win, _RECT_QIPAI)
     qipai_tab, purple_r, highlight_r = qipai_sidebar_tab_state(frame, tab_rect)
+    # 百家樂卡片只有「棋牌分頁亮起（在棋牌大廳）」時才需要全畫面定位；其餘畫面跳過
+    # 這個較貴的全幀比對（~240ms），大幅加速回桌。
+    card_w = (
+        _match_score(frame, win, _T_CARD, full, cfg) if qipai_tab == "selected" else None
+    )
     # 隨機選台只在右下固定區比對；全畫面比對在大廳會誤觸發入口
     random_score = _s(random_r)
     card_score = _s(card_w) if qipai_tab == "selected" else 0.0
@@ -208,7 +211,6 @@ def _gather_signals(frame: np.ndarray, cfg: AppConfig, win: GameWindow) -> dict:
 
     return {
         "random_r": random_r,
-        "random_w": random_w,
         "random_score": random_score,
         "card_w": card_w,
         "card_score": card_score,
@@ -415,14 +417,15 @@ def classify_nav_screen_confirmed(
     for i in range(n):
         if i > 0:
             time.sleep(nc["gap_s"])
-        votes.append(
-            classify_nav_screen(
-                capture_fn(),
-                cfg,
-                win,
-                use_ocr=force_ocr or (nc["use_ocr"] and (i == n - 1)),
-            )
-        )
+        if force_ocr:
+            use_ocr: bool | None = True
+        elif nc["use_ocr"] and i == n - 1:
+            # 最後一幀交給決策樹自決：模板分數接近難分才跑 OCR（_needs_ocr），
+            # 多數情況模板已足夠分辨 → 完全免 OCR，回桌大幅加速。
+            use_ocr = None
+        else:
+            use_ocr = False
+        votes.append(classify_nav_screen(capture_fn(), cfg, win, use_ocr=use_ocr))
     from collections import Counter
 
     phases = [v.phase for v in votes]
@@ -839,7 +842,9 @@ def return_to_baccarat_table(
     while time.monotonic() < deadline:
         if dismiss_popup_if_any(win, cfg, cap):
             continue
-        nav = classify_nav_screen_confirmed(cap, cfg, win, force_ocr=True)
+        # 模板已可靠（v1.2.11 起模板有打包），不再強制每幀 OCR；OCR 僅在最後一幀
+        # 且模板分數接近難分時才跑（見 classify_nav_screen_confirmed），大幅加速回桌。
+        nav = classify_nav_screen_confirmed(cap, cfg, win)
         phase = nav.phase
         frame = cap()
 

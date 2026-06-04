@@ -110,30 +110,69 @@ def _kick_requires_ocr_only(frame: np.ndarray, cfg: AppConfig, win: object | Non
     return _looks_like_table_surface(frame, cfg)
 
 
+_kick_memo: dict = {}
+
+
+def _frame_fp(frame: np.ndarray) -> tuple:
+    return (frame.shape, int(frame[::64, ::64].sum(dtype=np.int64)))
+
+
 def is_kick_idle_popup(
     frame: np.ndarray,
     cfg: AppConfig,
     *,
     win: object | None = None,
 ) -> bool:
-    """五局未押注提示窗：OCR、確定鈕模板（高信心可跨牌桌）、紫標題+青綠視覺。"""
-    hit, _text = kick_popup_message_ocr(frame, cfg)
-    if hit:
-        return True
-    # 確定鈕模板：先算一次分數。高信心（彈窗常蓋在牌桌上，OCR 可能讀不到字）
-    # 即使畫面像牌桌也採信——實測真實牌桌僅 ~0.38，彈窗 1.000。
+    """五局未押注提示窗。對「同一幀」去重快取（一次 classify 內會被多處重複呼叫）。"""
+    key = id(frame)
+    fp = _frame_fp(frame)
+    cached = _kick_memo.get(key)
+    if cached is not None and cached[0] == fp:
+        return cached[1]
+    r = _is_kick_idle_popup_impl(frame, cfg, win=win)
+    if len(_kick_memo) > 24:
+        _kick_memo.clear()
+    _kick_memo[key] = (fp, r)
+    return r
+
+
+def _is_kick_idle_popup_impl(
+    frame: np.ndarray,
+    cfg: AppConfig,
+    *,
+    win: object | None = None,
+) -> bool:
+    """五局未押注提示窗：確定鈕模板（高信心可跨牌桌）優先，再以紫標題+青綠視覺
+    與 OCR 關鍵字補強。
+
+    速度：先算「便宜」的模板分數（~數 ms）。高信心直接採信、免 OCR；連對話框
+    視覺都沒有又遠低於門檻時，必非彈窗 → 直接排除、免 OCR。只有「疑似對話框、
+    模板分數中等」時才跑較慢的 OCR/牌桌守門，避免回桌途中每一幀都吃 Tesseract。
+    """
+    # 1) 確定鈕模板高信心 → 直接採信（最快最準，彈窗實測 1.000、真牌桌/大廳僅 ~0.38~0.46）
     x, y, bw, bh = _dialog_rect(frame, cfg)
     tpl = match_template_in_region(frame, _T_CONFIRM, (x, y, bw, bh), threshold=0.0)
     tpl_score = float(tpl[2]) if tpl else 0.0
     if tpl_score >= _THR_TEMPLATE_STRICT:
         return True
+
+    # 2) 牌桌／棋牌大廳表面：視覺與卡片美術會干擾（百家樂卡片會誤觸發 dialog_visual），
+    #    這些畫面上唯一可靠的彈窗訊號就是確定鈕模板。模板偏低 → 必為乾淨畫面，免 OCR 直接排除；
+    #    只有模板落在中段（可能是非參考解析度下的彈窗）才花 OCR 關鍵字確認，保留安全網。
     if _kick_requires_ocr_only(frame, cfg, win):
+        if tpl_score >= _THR_TEMPLATE:
+            return kick_popup_message_ocr(frame, cfg)[0]
         return False
+
+    # 3) 非牌桌/大廳的居中對話框：紫標題+青綠視覺 + OCR 關鍵字補強
+    dialog_visual = _kick_dialog_visual(frame, cfg)
+    if not dialog_visual and tpl_score < _THR_TEMPLATE:
+        return False
+    if kick_popup_message_ocr(frame, cfg)[0]:
+        return True
     if tpl_score >= _THR_TEMPLATE:
         return True
-    if _kick_dialog_visual(frame, cfg):
-        return True
-    return False
+    return dialog_visual
 
 
 def find_kick_confirm_xy(

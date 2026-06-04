@@ -288,7 +288,7 @@ chip_values:
 - 100000
 - 500000
 nav_confirm:
-  samples: 3
+  samples: 2
   gap_s: 0.12
   min_agree: 2
   min_confidence: 0.0

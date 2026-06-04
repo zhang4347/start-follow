@@ -74,6 +74,20 @@ def tessdata_dir() -> Path:
     return resource_dir() / "tessdata"
 
 
+def templates_dir() -> Path:
+    """模板圖（match_template 比對用）所在資料夾。
+
+    凍結（打包）後放在打包資源根的 templates/；開發模式用套件內的
+    star_follow/vision/templates/。先前用 Path(__file__).parent/templates，
+    凍結後 __file__ 指向 PYZ 內虛擬路徑而讀不到模板（分數恆為 0）。
+    """
+    if is_frozen():
+        p = resource_dir() / "templates"
+        if p.is_dir():
+            return p
+    return _PKG_DIR / "vision" / "templates"
+
+
 def tesseract_exe() -> Path:
     """tesseract 執行檔：優先用打包內建，其次環境變數，最後預設安裝路徑。"""
     bundled = resource_dir() / "tesseract" / "tesseract.exe"

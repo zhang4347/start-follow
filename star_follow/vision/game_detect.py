@@ -11,7 +11,6 @@ from star_follow.vision.roi import scale_point, scale_rect
 from star_follow.vision.state import CountdownColor, CountdownState, read_countdown
 
 _T_ROOM_SWITCH = "room_switch.png"
-_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 # 換桌圖示只會出現在牌桌右上角這一帶（1280×720）
 _REF_SWITCH_SEARCH = (1000, 4, 275, 108)
 # 右側棋牌分頁（用來排除首頁大廳）
@@ -97,7 +96,9 @@ def qipai_sidebar_tab_state(
 
 
 def room_switch_template_path() -> Path:
-    return _TEMPLATES_DIR / _T_ROOM_SWITCH
+    from star_follow.paths import templates_dir
+
+    return templates_dir() / _T_ROOM_SWITCH
 
 
 def has_room_switch_template() -> bool:
@@ -218,7 +219,36 @@ def _table_hud_without_ocr(frame: np.ndarray, cfg: AppConfig) -> bool:
     return not _sidebar_looks_like_qipai_hall(frame, cfg)
 
 
+_room_memo: dict = {}
+
+
+def _frame_fp(frame: np.ndarray) -> tuple:
+    """便宜的畫面指紋：抽樣像素和，供同一幀重複呼叫做去重快取（id 重用時用它驗證）。"""
+    return (frame.shape, int(frame[::64, ::64].sum(dtype=np.int64)))
+
+
 def detect_in_baccarat_room(
+    frame: np.ndarray,
+    cfg: AppConfig,
+    win: _ClientGeom | None = None,
+) -> tuple[bool, dict]:
+    """是否在百家樂牌桌內。對「同一幀」做去重快取：一次 classify 內會被
+    compute_scene_features、classify 本體等多處重複呼叫，且內含較慢的桌號 OCR，
+    去重後同幀只算一次，回桌大幅加速。"""
+    key = id(frame)
+    fp = _frame_fp(frame)
+    cached = _room_memo.get(key)
+    if cached is not None and cached[0] == fp:
+        ok, meta = cached[1]
+        return ok, dict(meta)
+    ok, meta = _detect_in_baccarat_room_impl(frame, cfg, win)
+    if len(_room_memo) > 24:
+        _room_memo.clear()
+    _room_memo[key] = (fp, (ok, dict(meta)))
+    return ok, dict(meta)
+
+
+def _detect_in_baccarat_room_impl(
     frame: np.ndarray,
     cfg: AppConfig,
     win: _ClientGeom | None = None,
@@ -249,14 +279,16 @@ def detect_in_baccarat_room(
         meta = {"method": "countdown_ocr", **cd_meta}
         return True, meta
 
+    # 棋牌大廳（含已滑動可見卡片列）視覺先排除，免在大廳每幀都跑桌號 OCR（很慢）。
+    # 真牌桌的卡片列分數低、不會誤判成大廳，故先擋大廳是安全且大幅加速回桌。
+    if is_qipai_hall_frame(frame, cfg):
+        meta["reason"] = "qipai_hall"
+        return False, meta
+
     table_no = _read_valid_table_no(frame, cfg, win)
     if table_no is not None:
         meta = {"method": "table_no_ocr", "table_no": table_no}
         return True, meta
-
-    if is_qipai_hall_frame(frame, cfg):
-        meta["reason"] = "qipai_hall"
-        return False, meta
 
     if _has_chip_bar(frame):
         from star_follow.vision.nav_scene import measure_table_menu_chart

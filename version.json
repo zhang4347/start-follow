@@ -1,6 +1,6 @@
 {
-  "version": "1.2.10",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.10/StarFollow_1.2.10.zip",
-  "sha256": "e3359cc89005ffe9cfc564869e52523ae2de097c4979348b20790874fdf677e9",
-  "notes": "修正五局未押注彈窗蓋在牌桌上偵測不到、巡房卡住的問題（改用確定鈕模板高信心偵測）"
+  "version": "1.2.12",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.12/StarFollow_1.2.12.zip",
+  "sha256": "dc560dd5b3eb44d60f4ef44fc4e49fa438194d64e72f8eb75e76bece3b4434f1",
+  "notes": "修正打包後模板未內含導致五局彈窗偵測/導覽全失效（巡房卡住無限循環）；回桌辨識大幅加速（模板優先、減少冗餘 OCR）"
 }

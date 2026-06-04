@@ -62,6 +62,11 @@ for td in (PROJECT / "star_follow" / "tessdata").glob("*.traineddata"):
 # 確保自動更新（換檔腳本會保留舊 config）的舊使用者也能拿到新版座標/門檻。
 datas.append((str(PROJECT / "star_follow" / "config.yaml"), "_ref"))
 
+# match_template 用的模板圖：務必打包，否則凍結後讀不到、所有模板分數恆為 0
+# （導覽/五局提示確定鈕全失效）。放到資源根的 templates/，對應 paths.templates_dir()。
+for _tpl in (PROJECT / "star_follow" / "vision" / "templates").glob("*.png"):
+    datas.append((str(_tpl), "templates"))
+
 hiddenimports = [
     "win32gui",
     "win32con",

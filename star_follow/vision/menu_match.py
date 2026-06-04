@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from pathlib import Path
 
 import cv2
 import numpy as np
 from PIL import Image
 
-_TEMPLATES = Path(__file__).resolve().parent / "templates"
-
-
 @lru_cache(maxsize=8)
 def _load_template(name: str) -> np.ndarray | None:
-    path = _TEMPLATES / name
+    from star_follow.paths import templates_dir
+
+    path = templates_dir() / name
     if not path.is_file():
         return None
     try:
