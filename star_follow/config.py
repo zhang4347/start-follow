@@ -425,6 +425,7 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
         "stay_targets": cfg.room.stay_targets,
         "stay_pause_when_targets_absent": cfg.room.stay_pause_when_targets_absent,
         "stay_absent_rounds_to_pause": cfg.room.stay_absent_rounds_to_pause,
+        "stay_stop_when_targets_absent": cfg.room.stay_stop_when_targets_absent,
     }
     data["betting"] = {
         "follow_exclude": cfg.betting.follow_exclude,

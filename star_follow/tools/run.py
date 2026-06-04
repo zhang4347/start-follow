@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 import time
 from pathlib import Path
 
@@ -197,6 +198,40 @@ def _migrate_launch_settings() -> None:
         )
     except Exception:  # noqa: BLE001
         pass
+
+
+def _sync_config_for_version() -> None:
+    """新版啟動時，用打包內建的參考 config 覆蓋外部 config.yaml（每個版本只做一次）。
+
+    自動更新的換檔腳本會「保留」使用者既有的 config.yaml，導致舊使用者更新後仍用
+    舊設定（新座標／門檻沒跟上）。這裡在新 exe 啟動時依版本標記做一次覆蓋，把新版
+    config 套上去。使用者專屬資料只有 data\\follow_list.json 與啟動設定.txt，不受影響。
+    （開發模式不動；只有打包且內建了參考檔的版本才會生效。）
+    """
+    from star_follow import paths
+    from star_follow.version import __version__
+
+    if not paths.is_frozen():
+        return
+    ref = paths.resource_dir() / "_ref" / "config.yaml"
+    if not ref.is_file():
+        return
+    target = paths.config_path()
+    marker = paths.app_dir() / "data" / ".config_version"
+    try:
+        seen = marker.read_text(encoding="utf-8").strip()
+    except Exception:  # noqa: BLE001
+        seen = ""
+    if seen == __version__ and target.is_file():
+        return
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ref, target)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(__version__, encoding="utf-8")
+        print(f"已套用 v{__version__} 設定檔 config.yaml（追蹤名單與啟動設定保留）")
+    except Exception as exc:  # noqa: BLE001
+        print(f"套用新版設定檔失敗，沿用現有 config.yaml：{exc}")
 
 
 def _balance_test() -> int:
@@ -458,6 +493,9 @@ def main() -> int:
     if getattr(args, "balance_test", False):
         return _balance_test()
 
+    # 新版設定檔：依版本把內建的新 config.yaml 套上去（自動更新會保留舊 config，
+    # 這裡確保新版座標/門檻能跟上；data\追蹤名單與啟動設定.txt 不受影響）
+    _sync_config_for_version()
     # 啟動設定檔（雙擊 exe 時用；命令列參數優先）
     # 先做智能合併：保留舊值、補上新選項（自動更新者的舊檔才看得到新選項）
     _migrate_launch_settings()

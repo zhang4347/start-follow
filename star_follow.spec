@@ -58,6 +58,10 @@ for dll in TESS_SRC.glob("*.dll"):
 for td in (PROJECT / "star_follow" / "tessdata").glob("*.traineddata"):
     datas.append((str(td), "tessdata"))
 
+# 內建一份「參考 config.yaml」到 _ref/：新版啟動時用它覆蓋外部 config.yaml，
+# 確保自動更新（換檔腳本會保留舊 config）的舊使用者也能拿到新版座標/門檻。
+datas.append((str(PROJECT / "star_follow" / "config.yaml"), "_ref"))
+
 hiddenimports = [
     "win32gui",
     "win32con",

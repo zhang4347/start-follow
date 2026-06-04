@@ -74,7 +74,7 @@ room:
   stay_table: 0
   stay_targets: []
   stay_pause_when_targets_absent: true
-  stay_absent_rounds_to_pause: 1
+  stay_absent_rounds_to_pause: 2
   stay_stop_when_targets_absent: true
 betting:
   follow_exclude:
@@ -83,7 +83,7 @@ betting:
   anti_kick_enabled: true
   anti_kick_idle_rounds: 5
   anti_kick_side: 閒
-  anti_kick_amount: 0
+  anti_kick_amount: 1000
 telegram:
   enabled: false
   bot_token: 8893028334:AAGNJQt5djgMjjmCswxfwTUdh2h7VdvoXMM
@@ -120,8 +120,17 @@ click_points:
   - 511
   - 497
   kick_idle_confirm:
-  - 640
-  - 510
+  - 639
+  - 502
+  baccarat_card:
+  - 540
+  - 365
+  random_select:
+  - 1132
+  - 649
+  home_qipai:
+  - 1202
+  - 385
 vision:
   fast_ocr: true
   ocr_scale: 1

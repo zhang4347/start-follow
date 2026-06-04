@@ -55,6 +55,8 @@ class RoundContext:
     plan: dict[str, int] = field(default_factory=dict)
     ui_prepared: bool = False
     recovery_open_tried: bool = False
+    # 本局統計表「表頭實際讀到幾個名字」：用來區分「真的沒對象」與「OCR 沒讀到表」
+    header_name_count: int = 0
     # 最近一次 _build_plan「過濾前」對象實際下注的區域（含莊/閒），供換桌判斷
     # 「對象只下莊/閒（不是我們要跟的）→ 不黏桌」用。
     last_raw_bet_areas: set[str] = field(default_factory=set)
@@ -94,6 +96,8 @@ class FollowEngine:
         self._last_locked_log_mono = 0.0
         self._session_rounds = 0
         self._session_stake = 0
+        self._locked_saw_close = False  # LOCKED：是否已確認當局收掉（紅燈/低T），用於穩健接新局
+        self._locked_since_mono = 0.0  # 進入 LOCKED 的時點（時間保險用）
         self._stay_idle_rounds = 0  # 掛房：連續沒下注的局數（防踢用）
         self._stay_absent_streak = 0  # 掛房：連續沒讀到任何指定對象的局數
         self._stay_paused = False  # 掛房：對象全離桌 → 暫停跟注、不回桌
@@ -119,25 +123,35 @@ class FollowEngine:
     def _min_start_t(self) -> int:
         return self.cfg.timing.min_round_start_t
 
+    def _stay_late_start_floor_t(self) -> int:
+        """掛房錨不到時的最低可開局 T：比照巡房 min_enter_t（預設 8），
+        只要還有足夠時間開表+下注就照跟，不再整局放棄。"""
+        floor = getattr(self.cfg.room, "min_enter_t", 8) or 8
+        return max(self.cfg.timing.finalize_at_t + 2, floor)
+
     def _stop_engine(self, reason: str) -> None:
         self._stopped_reason = reason
         self._running = False
         logger.error("安全停損：%s — 引擎停止，請人工確認後再啟動", reason)
 
     def _can_start_round(self, t: int | None, cd: CountdownState) -> bool:
-        """掛機穩定：僅在 T≥min 且已錨定、未超過開局上限時才跑本局。"""
+        """掛機開局判斷。
+
+        - 抓到 T=19～20：錨定成功，走精準軟體倒數（最佳）。
+        - 沒錨到（中途進桌／漏拍）：只要綠燈且 T 還夠開表+下注（≥late floor），
+          就改用 OCR 倒數照跟，不再因為錯過 1～2 秒的錨定窗而整局放棄。
+        """
         if t is None or cd.color != CountdownColor.GREEN:
             return False
         timing = self.cfg.timing
-        if t < timing.min_round_start_t:
-            return False
         if t > timing.open_stats_at_t:
-            return False
+            return False  # 太早，等倒數進入開局窗
         if timing.software_countdown:
             self._cd_tracker.try_anchor(cd)
-            if not self._cd_tracker.anchored:
-                return False
-        return True
+        if self._cd_tracker.anchored:
+            return True  # 正常路徑：T=19～20 已錨定
+        # 錨不到 → 比照巡房：還有足夠時間就用 OCR 倒數跟
+        return t >= self._stay_late_start_floor_t()
 
     def _begin_round(self, start_t: int, frame=None) -> None:
         assert self._win is not None
@@ -149,7 +163,8 @@ class FollowEngine:
             round_start_t=start_t,
             round_start_mono=time.perf_counter(),
         )
-        logger.info("開盤 T=%s", start_t)
+        mode = "錨定" if self._cd_tracker.anchored else "OCR跟(未錨定)"
+        logger.info("開盤 T=%s（%s）", start_t, mode)
         focus_window(self._win.hwnd)
         # 重用 run_once 已擷取的影像，省一次截圖
         if frame is None:
@@ -210,6 +225,8 @@ class FollowEngine:
         self.ctx = RoundContext()
         self._cd_tracker.reset()
         self._last_logged_t = None
+        self._locked_saw_close = False
+        self._locked_since_mono = time.monotonic()
 
     def _dismiss_menu_dropdown(self, frame) -> bool:
         """關掉卡在畫面上的 ☰ 下拉（沒開統計表時）。"""
@@ -338,11 +355,11 @@ class FollowEngine:
         self._enter_locked(note=f"本局中止：{reason}")
 
     def _abort_round_if_too_late(self, frame, t: int | None) -> bool:
-        """若已誤入流程但開局太晚，安全中止。"""
+        """若已誤入流程但開局太晚（連 OCR 跟都來不及），安全中止。"""
         rs = self.ctx.round_start_t
         if rs is None or t is None:
             return False
-        if rs >= self._min_start_t():
+        if rs >= self._stay_late_start_floor_t():
             return False
         logger.warning("本局開在 T=%s 過晚，中止流程", rs)
         if self._panel_open(frame) or self.ctx.stats_opened:
@@ -668,6 +685,9 @@ class FollowEngine:
         if result.elapsed_ms:
             kind = "刷新金額" if refresh_only else "表頭+欄位"
             logger.info("統計 OCR %.0f ms (%s)", result.elapsed_ms, kind)
+        self.ctx.header_name_count = len(
+            [n for _, n in result.header_columns if n and n.strip()]
+        )
         if not refresh_only:
             self.ctx.resolved_columns = dict(result.resolved_columns)
             self._cache_column_hints()
@@ -759,7 +779,7 @@ class FollowEngine:
         if not (panel_now or self.ctx.stats_opened):
             return False
         rs = self.ctx.round_start_t
-        if rs is not None and rs < self._min_start_t():
+        if rs is not None and rs < self._stay_late_start_floor_t():
             return False
         timing = self.cfg.timing
         # 主要：到達目標定稿 T（速度已足夠，可設 13/14 留大量餘裕）
@@ -989,7 +1009,12 @@ class FollowEngine:
         return True
 
     def _update_stay_presence(self) -> None:
-        """掛房：依本局是否讀到任何指定對象，更新「對象全離桌→暫停」狀態。"""
+        """掛房：依本局是否讀到任何指定對象，更新「對象全離桌→暫停／停止」狀態。
+
+        關鍵：只有「確實讀到統計表（表頭有名字）但沒有任何一個是追蹤對象」才算
+        真的離桌；若整張表頭一個名字都讀不到（OCR 失敗／表沒開好）就不計入，避免
+        單次讀取失誤誤判成對象消失而錯誤停止程式。
+        """
         if self.cfg.room.mode != "stay" or not self.cfg.room.stay_pause_when_targets_absent:
             return
         present = len(self.ctx.resolved_columns) > 0
@@ -1002,7 +1027,15 @@ class FollowEngine:
             self._stay_paused = False
             self._stay_pause_notified = False
             return
+        if self.ctx.header_name_count <= 0:
+            logger.info("本局統計表沒讀到任何名字（OCR 失敗／表未開好），不計入離桌判定，重試")
+            return
         self._stay_absent_streak += 1
+        logger.info(
+            "本局表頭有 %d 個名字但無任何追蹤對象（連續離桌 %d 局）",
+            self.ctx.header_name_count,
+            self._stay_absent_streak,
+        )
         need = max(1, self.cfg.room.stay_absent_rounds_to_pause)
         if self._stay_absent_streak >= need and not self._stay_paused:
             self._stay_paused = True
@@ -1314,11 +1347,23 @@ class FollowEngine:
                     ocr_color.name if ocr_color else "?",
                 )
                 self._last_locked_log_mono = now
+            # 先確認當局已收掉（紅燈／倒數歸零附近／無綠燈，或鎖局已逾 12s 當局必已結束）
+            # → 之後遇到綠燈新局（T≥floor）就接，避免當機漏掉 19~20 而整局不跟
             if (
+                ocr_color != CountdownColor.GREEN
+                or (ocr_t is not None and ocr_t <= 4)
+                or (time.monotonic() - self._locked_since_mono >= 22.0)
+            ):
+                self._locked_saw_close = True
+            new_round = (
                 ocr_color == CountdownColor.GREEN
                 and ocr_t is not None
-                and ocr_t >= self._min_start_t()
-            ):
+                and (
+                    ocr_t >= self._min_start_t()
+                    or (self._locked_saw_close and ocr_t >= self._stay_late_start_floor_t())
+                )
+            )
+            if new_round:
                 frame2 = capture_client(self._win)
                 if self._panel_open_confirmed(frame2) or self._menu_dropdown_open(frame2):
                     self._recover_ui(frame2, "封盤轉下一局")

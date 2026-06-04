@@ -149,6 +149,15 @@ def _scaled_pt(cfg: AppConfig, win: GameWindow, ref_pt: tuple[int, int]) -> tupl
     )
 
 
+def _fallback_pt(
+    cfg: AppConfig, win: GameWindow, config_key: str, default_ref_pt: tuple[int, int]
+) -> tuple[int, int]:
+    """備援固定座標：優先用 config.click_points（標記工具寫入），否則用內建預設。"""
+    pt = cfg.click_points.get(config_key)
+    ref_pt = (int(pt[0]), int(pt[1])) if pt and len(pt) == 2 else default_ref_pt
+    return _scaled_pt(cfg, win, ref_pt)
+
+
 def _scaled_rect(cfg: AppConfig, win: GameWindow, ref_rect: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
     return scale_rect(
         list(ref_rect),
@@ -765,7 +774,7 @@ def _click_entry(win: GameWindow, cfg: AppConfig, frame: np.ndarray) -> None:
         if hit_w and hit_w[2] >= _THR_RANDOM_ENTRY:
             hit = hit_w
     if hit is None or hit[2] < _THR_RANDOM_ENTRY:
-        rx, ry = _scaled_pt(cfg, win, _REF_PT_RANDOM)
+        rx, ry = _fallback_pt(cfg, win, "random_select", _REF_PT_RANDOM)
         logger.info("入口模板未中，改點備援『隨機選台』(%d,%d)", rx, ry)
         click_at(win, rx, ry, backend=cfg.automation.ui_click_backend)
     else:
@@ -780,7 +789,7 @@ def _click_home_qipai(win: GameWindow, cfg: AppConfig, frame: np.ndarray) -> Non
         logger.info("首頁大廳 → 點『棋牌』(%d,%d) score=%.2f", hit[0], hit[1], hit[2])
         click_at(win, hit[0], hit[1], backend=cfg.automation.ui_click_backend)
     else:
-        qx, qy = _scaled_pt(cfg, win, _REF_PT_QIPAI)
+        qx, qy = _fallback_pt(cfg, win, "home_qipai", _REF_PT_QIPAI)
         logger.info("首頁大廳模板未中，改點備援『棋牌』(%d,%d)", qx, qy)
         click_at(win, qx, qy, backend=cfg.automation.ui_click_backend)
     time.sleep(1.2)
@@ -915,13 +924,13 @@ def return_to_baccarat_table(
         ):
             if not backup_card_tried:
                 backup_card_tried = True
-                fx, fy = _scaled_pt(cfg, win, _REF_PT_CARD)
+                fx, fy = _fallback_pt(cfg, win, "baccarat_card", _REF_PT_CARD)
                 logger.info("棋牌大廳 → 先點備援百家樂 (%d,%d)（不滑動）", fx, fy)
                 _click_card_at(win, cfg, (fx, fy), tag="備援先不滑")
                 time.sleep(2.0)
                 continue
             if scroll_rounds >= _SCROLL_MAX_ROUNDS:
-                fx, fy = _scaled_pt(cfg, win, _REF_PT_CARD)
+                fx, fy = _fallback_pt(cfg, win, "baccarat_card", _REF_PT_CARD)
                 logger.warning("已滑動 %d 輪仍無模板，再點備援 (%d,%d)", scroll_rounds, fx, fy)
                 _click_card_at(win, cfg, (fx, fy), tag="備援")
                 qipai_enter_mono = None
@@ -934,7 +943,7 @@ def return_to_baccarat_table(
                 _click_card_at(win, cfg, (card[0], card[1]), tag=f"滑動後 score={card[2]:.2f}")
                 qipai_enter_mono = None
             else:
-                fx, fy = _scaled_pt(cfg, win, _REF_PT_CARD)
+                fx, fy = _fallback_pt(cfg, win, "baccarat_card", _REF_PT_CARD)
                 logger.warning("本輪滑動未中模板，點備援 (%d,%d)", fx, fy)
                 _click_card_at(win, cfg, (fx, fy), tag="備援")
                 qipai_enter_mono = None
