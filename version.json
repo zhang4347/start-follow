@@ -1,6 +1,6 @@
 {
-  "version": "1.2.7",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.7/StarFollow_1.2.7.zip",
-  "sha256": "f787515e49f6cb2bd679706bcfab71595c0864ffbff848ad7c42fe8125781673",
-  "notes": "軟體倒數偏快+OCR較小立刻校正；局內定稿前重讀T"
+  "version": "1.2.9",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.9/StarFollow_1.2.9.zip",
+  "sha256": "e80b2105ec71c5d08816650829553fb87f7f28bf03c2036077602a5b023b3b83",
+  "notes": "掛房時間放寬(錯過錨定改OCR照跟)、被踢/當機更穩回桌、離桌防誤停、防踢補注閒1000、更新改為覆蓋config.yaml"
 }
