@@ -81,7 +81,7 @@ betting:
   - 莊
   - 閒
   anti_kick_enabled: true
-  anti_kick_idle_rounds: 5
+  anti_kick_idle_rounds: 3
   anti_kick_side: 閒
   anti_kick_amount: 1000
 telegram:

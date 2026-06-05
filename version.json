@@ -1,6 +1,6 @@
 {
-  "version": "1.2.12",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.12/StarFollow_1.2.12.zip",
-  "sha256": "dc560dd5b3eb44d60f4ef44fc4e49fa438194d64e72f8eb75e76bece3b4434f1",
-  "notes": "修正打包後模板未內含導致五局彈窗偵測/導覽全失效（巡房卡住無限循環）；回桌辨識大幅加速（模板優先、減少冗餘 OCR）"
+  "version": "1.2.13",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.13/StarFollow_1.2.13.zip",
+  "sha256": "a5511db73e3d82b3b6d4c8f392e33fb5d8a0e640cdcc711098de7f8e9293b449",
+  "notes": "掛房防踢提前：連續 3 局沒跟到注就自動補一手閒1000（原為 5 局），降低被踢風險"
 }

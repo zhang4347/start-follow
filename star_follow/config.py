@@ -123,7 +123,7 @@ class BettingConfig:
     follow_exclude: list[str] = field(default_factory=lambda: ["莊", "閒"])
     # 掛房防踢：連續這麼多局我方都沒下注，就自己補一手最小注，避免被系統踢出。
     anti_kick_enabled: bool = True
-    anti_kick_idle_rounds: int = 5   # 連續幾局沒下注就補注
+    anti_kick_idle_rounds: int = 3   # 連續幾局沒下注就補注
     anti_kick_side: str = "閒"        # 補注下哪一邊（莊/閒）
     anti_kick_amount: int = 0         # 補注金額，0=用最小籌碼
 
@@ -304,7 +304,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
         betting=BettingConfig(
             follow_exclude=[str(x) for x in (bt.get("follow_exclude") or ["莊", "閒"])],
             anti_kick_enabled=bool(bt.get("anti_kick_enabled", True)),
-            anti_kick_idle_rounds=int(bt.get("anti_kick_idle_rounds", 5)),
+            anti_kick_idle_rounds=int(bt.get("anti_kick_idle_rounds", 3)),
             anti_kick_side=str(bt.get("anti_kick_side", "閒")),
             anti_kick_amount=int(bt.get("anti_kick_amount", 0)),
         ),
