@@ -1,6 +1,6 @@
 {
-  "version": "1.2.14",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.14/StarFollow_1.2.14.zip",
-  "sha256": "e9bde40c756894cce01e952380e9f1aa7e3049c2c16be81bd2d50f39b21f355b",
-  "notes": "自動更新容錯：下載更新包遇憑證/網路問題時，改用校驗碼(sha256)安全備援下載，解決部分網路(浮動IP/缺中繼憑證)更新失敗"
+  "version": "1.2.15",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.15/StarFollow_1.2.15.zip",
+  "sha256": "a8fa9651fcbab181a1bbb17c573037ce280db129eee560c9f40c7d583cdbf84e",
+  "notes": "測試自動更新（沿用 v1.2.14 的下載容錯機制）"
 }
