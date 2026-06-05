@@ -27,6 +27,7 @@ from star_follow.vision.stats_parser import (
     parse_bottom_row_amount,
     parse_stats_table,
     resolve_follow_columns,
+    verify_follow_columns,
 )
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,9 @@ class FollowEngine:
             resync_tolerance=tcfg.countdown_resync_tolerance,
         )
         self._last_logged_t: int | None = None
+        # 跨局欄位快取：上一局找到的「對象→欄位」，下一局只驗證該欄表頭名字（快），
+        # 對不上才退回整排表頭 OCR；換桌時清空。
+        self._col_cache: dict[str, int] = {}
         self._late_skip_logged = False
         self._ui_fail_streak = 0
         self._last_idle_cleanup_mono = 0.0
@@ -163,6 +167,14 @@ class FollowEngine:
             round_start_t=start_t,
             round_start_mono=time.perf_counter(),
         )
+        # 半路接局（沒在 T=19~20 錨定）時，用開局 T 起算軟體倒數：否則開統計表後
+        # 表會蓋住倒數數字 → OCR 讀不到 t → 沒有軟體時鐘 → 永遠走不到定稿而卡死。
+        if (
+            self.cfg.timing.software_countdown
+            and not self._cd_tracker.anchored
+            and start_t is not None
+        ):
+            self._cd_tracker.force_anchor(start_t)
         mode = "錨定" if self._cd_tracker.anchored else "OCR跟(未錨定)"
         logger.info("開盤 T=%s（%s）", start_t, mode)
         focus_window(self._win.hwnd)
@@ -197,6 +209,24 @@ class FollowEngine:
             self._late_skip_logged = True
         if self._panel_open_confirmed(frame) or self._menu_dropdown_open(frame):
             self._recover_ui(frame, "跳過晚接局")
+
+    def _round_active_too_long(self) -> bool:
+        """看門狗：單局在下注階段卡太久（多半 OCR 太慢／畫面異常導致走不到定稿、
+        統計表關不掉），回 True 代表該強制收尾，避免永遠卡住。預設 50 秒，可用
+        config.yaml 的 timing.round_watchdog_s 調整（<=0 關閉）。"""
+        rs = self.ctx.round_start_mono
+        if rs is None:
+            return False
+        budget = 50.0
+        raw = self.cfg.raw.get("timing")
+        if isinstance(raw, dict):
+            try:
+                budget = float(raw.get("round_watchdog_s", 50.0))
+            except Exception:  # noqa: BLE001
+                budget = 50.0
+        if budget <= 0:
+            return False
+        return (time.perf_counter() - rs) > budget
 
     def _menu_button_rect(self) -> tuple[int, int, int, int]:
         return self._scale_rect("menu_button")
@@ -654,11 +684,27 @@ class FollowEngine:
                 entry.column_index = col
 
     def _resolve_columns(self, frame) -> None:
-        targets = [(e.name, e.column_index) for e in self.follow.active_entries()]
+        entries = self.follow.active_entries()
+        names = [e.name for e in entries]
+        # 跨局快取：上一局已找到全部對象 → 這局只驗證那幾欄表頭名字（單欄 OCR，快），
+        # 全部相符就沿用，省掉整排中文表頭 OCR（最大宗的慢動作）。
+        cached = [(n, self._col_cache[n]) for n in names if n in self._col_cache]
+        if cached and len(cached) == len(names):
+            vr = verify_follow_columns(frame, self.cfg, cached)
+            if len(vr.resolved_columns) == len(names):
+                logger.info(
+                    "表頭快取命中 %.0f ms 欄位=%s", vr.elapsed_ms, vr.resolved_columns
+                )
+                self.ctx.resolved_columns = dict(vr.resolved_columns)
+                self._cache_column_hints()
+                return
+            logger.info("表頭快取失效（對象換位/換桌），改整排重掃")
+        targets = [(e.name, e.column_index) for e in entries]
         result = resolve_follow_columns(frame, self.cfg, targets)
         if result.elapsed_ms:
             logger.info("表頭 OCR %.0f ms", result.elapsed_ms)
         self.ctx.resolved_columns = dict(result.resolved_columns)
+        self._col_cache = dict(result.resolved_columns)
         self._cache_column_hints()
 
     def _build_plan(
@@ -690,6 +736,7 @@ class FollowEngine:
         )
         if not refresh_only:
             self.ctx.resolved_columns = dict(result.resolved_columns)
+            self._col_cache = dict(result.resolved_columns)
             self._cache_column_hints()
         plan: dict[str, int] = {}
         for entry in entries:
@@ -1003,6 +1050,7 @@ class FollowEngine:
         self.phase = Phase.IDLE
         self.ctx = RoundContext()
         self._cd_tracker.reset()
+        self._col_cache = {}  # 換桌後欄位版面不同，清掉跨局快取，下一局整排重掃
         self._stay_idle_rounds = 0
         self._stay_at_table_grace_until = time.monotonic() + 30.0
         logger.info("掛房已回到牌桌，恢復跟注（30s 內不因畫面閃爍重跑回桌）")
@@ -1247,6 +1295,13 @@ class FollowEngine:
         panel_open = self._panel_open(frame)
         anchor_t = timing.countdown_anchor_t
 
+        # 看門狗：下注階段若卡太久（沒走到定稿），強制關表並重置，避免永遠卡死。
+        if self.phase in (Phase.BET_OPEN, Phase.STATS_READY) and self._round_active_too_long():
+            logger.warning("本局在下注階段逾時未定稿（卡住保護）→ 強制關表收尾、重置等下一局")
+            self._recover_ui(capture_client(self._win), "單局逾時看門狗")
+            self._enter_locked(note="本局逾時，重置等下一局")
+            return True
+
         if self.phase == Phase.IDLE:
             if cd_color == CountdownColor.GREEN and t is not None:
                 if self._can_start_round(t, cd):
@@ -1476,6 +1531,7 @@ class FollowEngine:
                             actual,
                             target,
                         )
+                self._col_cache = {}  # 換桌後欄位版面不同，清掉跨局快取
                 return True
             logger.info("No.%d 換桌未成功（滿桌或點不到），跳過", target)
             cur = target

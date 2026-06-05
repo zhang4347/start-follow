@@ -372,6 +372,54 @@ def resolve_follow_columns(
     )
 
 
+def verify_follow_columns(
+    frame: np.ndarray,
+    cfg: AppConfig,
+    verify: list[tuple[str, int]],
+) -> StatsParseResult:
+    """跨局快取驗證：只 OCR 指定欄位的表頭，確認該欄名字仍是同一位對象。
+
+    全部對得上 → resolved_columns 帶回全部對象（省掉整排表頭 OCR，最大宗的慢動作）。
+    任一對不上（對象換座位／已換桌）→ 該對象不在 resolved_columns，呼叫端應退回整排重掃。
+    名字比對沿用 find_column_for_player 的精準+模糊規則，故不會把路人當成對象。
+    """
+    t0 = time.perf_counter()
+    ocr_mod.set_ocr_options(fast=cfg.vision.fast_ocr, scale=cfg.vision.ocr_scale)
+    set_header_ocr(cfg.vision.header_use_paddle)
+    table, _ = extract_stats_table(frame, cfg)
+    layout = cfg.raw.get("stats_layout", {})
+
+    band = layout.get("header_band", [0.0, 0.0, 1.0, 0.12])
+    if isinstance(band, list) and len(band) == 4:
+        header = _crop_rel(table, band[0], band[1], band[2], band[3])
+    else:
+        header = table[: max(20, int(table.shape[0] * 0.12)), :]
+    _, cols = _columns_for(table, layout)
+
+    resolved: dict[str, int] = {}
+    for name, col in verify:
+        if col is None or col < 0 or col >= len(cols):
+            continue
+        x0, x1 = cols[col]
+        got = _ocr_header_name(header[:, x0:x1])
+        if not got:
+            continue
+        if find_column_for_player([(col, got)], name, hint=col) == col:
+            resolved[name] = col
+
+    elapsed = (time.perf_counter() - t0) * 1000
+    return StatsParseResult(
+        players=[],
+        bets_by_player={},
+        bets_by_column={},
+        header_columns=[],
+        confidences={},
+        raw_header=[],
+        elapsed_ms=elapsed,
+        resolved_columns=resolved,
+    )
+
+
 def parse_stats_table(
     frame: np.ndarray,
     cfg: AppConfig,

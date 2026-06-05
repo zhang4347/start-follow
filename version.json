@@ -1,6 +1,6 @@
 {
-  "version": "1.2.15",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.15/StarFollow_1.2.15.zip",
-  "sha256": "a8fa9651fcbab181a1bbb17c573037ce280db129eee560c9f40c7d583cdbf84e",
-  "notes": "測試自動更新（沿用 v1.2.14 的下載容錯機制）"
+  "version": "1.2.16",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.16/StarFollow_1.2.16.zip",
+  "sha256": "d5bc04e4fdd65f0edf6b713114c835de4a0a573ce06e6599c66df717a4775675",
+  "notes": "掛房優化：修正在隨機選台入口畫面被誤判成已回桌、不在牌桌時不誤讀餘額、統計表頭OCR跨局加速（跟注更穩不漏做）、半路開局倒數錨定＋單局看門狗防卡死"
 }

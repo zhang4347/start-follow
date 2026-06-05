@@ -148,6 +148,12 @@ class SheetUploader:
 
     def _upload_once(self) -> bool:
         """讀餘額並上傳。成功回傳 True；讀不到餘額或上傳失敗回傳 False（之後會重試補上傳）。"""
+        # 不在牌桌內時餘額位置會顯示別的數字，OCR 會讀錯 → 不上傳，等下次補上傳。
+        from star_follow.monitor.screen_gate import in_baccarat_room
+
+        if in_baccarat_room(self.cfg) is not True:
+            logger.info("餘額上傳：目前不在牌桌內，暫不辨識餘額（稍後重試）")
+            return False
         balance = read_balance_once(self.cfg)
         if balance <= 0:
             logger.info("餘額上傳：暫時讀不到餘額（視窗未開或 OCR 失敗），稍後重試")

@@ -16,6 +16,27 @@ _REF_SWITCH_SEARCH = (1000, 4, 275, 108)
 # 右側棋牌分頁（用來排除首頁大廳）
 _REF_QIPAI_TAB = (1130, 335, 150, 95)
 
+# 百家樂入口「隨機選台」按鈕（右下角）。真牌桌不會有這顆，用來擋掉「入口畫面的
+# 桌位縮圖桌號被誤讀成在房內」。
+_T_RANDOM_SELECT = "lobby_random_select.png"
+_REF_RANDOM_SELECT = (985, 580, 295, 140)
+_THR_RANDOM_SELECT = 0.6
+
+
+def _is_baccarat_entry_screen(frame: np.ndarray, cfg: AppConfig) -> bool:
+    """是否為百家樂入口（隨機選台）畫面：隨機選台模板強命中即是。
+
+    入口畫面會列出多張桌位縮圖（含 No.7 之類桌號），_read_valid_table_no 可能讀到
+    其中一個而誤判成「已在牌桌」（method=table_no_ocr），導致回桌時沒點隨機選台就
+    以為回到桌了。真牌桌不會有這顆按鈕，故在此先排除。
+    """
+    h, w = frame.shape[:2]
+    ref_w = cfg.window.reference_width or 1280
+    ref_h = cfg.window.reference_height or 720
+    rect = scale_rect(list(_REF_RANDOM_SELECT), ref_w, ref_h, w, h)
+    hit = match_template_in_region(frame, _T_RANDOM_SELECT, rect, threshold=0.0)
+    return bool(hit and hit[2] >= _THR_RANDOM_SELECT)
+
 
 def is_lobby(frame: np.ndarray, cfg: AppConfig | None = None) -> bool:
     """百家樂入口：中央黃字說明，且尚無牌桌籌碼列／倒數區特徵。"""
@@ -259,6 +280,11 @@ def _detect_in_baccarat_room_impl(
 
     if is_kick_idle_popup(frame, cfg, win=win):
         meta["reason"] = "kick_popup"
+        return False, meta
+
+    # 入口（隨機選台）畫面：縮圖桌號會被 _read_valid_table_no 誤讀成在房內，先排除。
+    if _is_baccarat_entry_screen(frame, cfg):
+        meta["reason"] = "baccarat_entry_random_select"
         return False, meta
 
     if is_lobby(frame, cfg):
