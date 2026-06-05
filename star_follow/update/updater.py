@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 import time
@@ -96,10 +97,21 @@ def fetch_manifest(url: str, timeout: float) -> dict | None:
     return None
 
 
-def _download(url: str, dest: Path, timeout: float) -> bool:
+def _download(url: str, dest: Path, timeout: float, insecure: bool = False) -> bool:
+    """下載檔案。insecure=True 時不驗證 TLS 憑證（給憑證鏈不完整的網路用）。
+
+    註：不驗證連線本身不代表不安全——呼叫端對更新包一律以 manifest 帶來的
+    sha256 做完整性校驗，校驗碼來自「有正常驗證」的 version.json，無法被偽造，
+    所以即使連線不驗證，被竄改的檔案也會在校驗階段被擋下。
+    """
     try:
+        ctx = None
+        if insecure:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
         req = urllib.request.Request(url, headers={"User-Agent": "StarFollow-Updater"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp, dest.open("wb") as f:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp, dest.open("wb") as f:
             while True:
                 buf = resp.read(1 << 16)
                 if not buf:
@@ -107,7 +119,7 @@ def _download(url: str, dest: Path, timeout: float) -> bool:
                 f.write(buf)
         return True
     except Exception as exc:  # noqa: BLE001
-        logger.warning("下載更新包失敗：%s", exc)
+        logger.warning("下載更新包失敗（insecure=%s）：%s", insecure, exc)
         return False
 
 
@@ -355,15 +367,31 @@ def maybe_update(cfg: UpdateConfig) -> bool:
     except Exception:  # noqa: BLE001
         pass
     tmp_zip = _STAGE_DIR / f"StarFollow_{remote}.zip"
+    want_hash = str(man.get("sha256") or "").strip().lower()
+    dl_timeout = max(cfg.timeout_s, 120.0)
     print("下載更新包中…")
     _ulog(f"下載更新包：{man['url']} -> {tmp_zip}")
-    # 下載逾時放寬，更新包通常較大
-    if not _download(str(man["url"]), tmp_zip, max(cfg.timeout_s, 120.0)):
+
+    # 第一次：正常下載（驗證 TLS 憑證）。
+    used_insecure = False
+    downloaded = _download(str(man["url"]), tmp_zip, dl_timeout)
+    if not downloaded:
+        # 容錯：部分客戶網路/CDN 節點沒附完整中繼憑證，或線路攔截 HTTPS，
+        # 導致 TLS 憑證驗證失敗。改用「不驗證連線」重抓，但必須有 sha256 才放行，
+        # 並在下方做強制校驗，確保檔案沒被竄改（校驗碼來自已驗證的 version.json）。
+        if not want_hash:
+            _ulog("一般下載失敗，且 manifest 無 sha256，為安全起見不啟用容錯下載")
+            return False
+        print("一般下載失敗（多為憑證問題），改用校驗碼備援下載…")
+        _ulog("一般下載失敗，啟用容錯下載（不驗證連線，改以 sha256 校驗完整性）")
+        downloaded = _download(str(man["url"]), tmp_zip, dl_timeout, insecure=True)
+        used_insecure = True
+    if not downloaded:
         _ulog("下載更新包失敗")
         return False
     _ulog(f"下載完成，大小={tmp_zip.stat().st_size if tmp_zip.exists() else 0}")
 
-    want_hash = str(man.get("sha256") or "").strip().lower()
+    # sha256 校驗：走過容錯（不驗證連線）下載時為「強制」；正常下載時若有也驗。
     if want_hash:
         got = _sha256(tmp_zip).lower()
         if got != want_hash:
@@ -371,6 +399,9 @@ def maybe_update(cfg: UpdateConfig) -> bool:
             logger.warning("更新包校驗碼不符（預期 %s，實得 %s），放棄更新", want_hash, got)
             return False
         _ulog("sha256 校驗通過")
+    elif used_insecure:
+        _ulog("容錯下載但無 sha256 可驗，放棄更新")
+        return False
 
     install_dir = paths.app_dir()
     print("套用更新並重新啟動…")

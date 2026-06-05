@@ -1,6 +1,6 @@
 {
-  "version": "1.2.13",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.13/StarFollow_1.2.13.zip",
-  "sha256": "a5511db73e3d82b3b6d4c8f392e33fb5d8a0e640cdcc711098de7f8e9293b449",
-  "notes": "掛房防踢提前：連續 3 局沒跟到注就自動補一手閒1000（原為 5 局），降低被踢風險"
+  "version": "1.2.14",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.14/StarFollow_1.2.14.zip",
+  "sha256": "e9bde40c756894cce01e952380e9f1aa7e3049c2c16be81bd2d50f39b21f355b",
+  "notes": "自動更新容錯：下載更新包遇憑證/網路問題時，改用校驗碼(sha256)安全備援下載，解決部分網路(浮動IP/缺中繼憑證)更新失敗"
 }
