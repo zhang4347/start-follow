@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
+from collections.abc import Callable
 
 import numpy as np
 from mss import mss
@@ -17,6 +19,43 @@ from star_follow.capture.window import find_game_window, refresh_game_window
 from star_follow.config import AppConfig
 
 logger = logging.getLogger(__name__)
+
+
+def stable_balance(
+    read_once: Callable[[], int],
+    *,
+    samples: int = 5,
+    min_agree: int = 3,
+) -> int:
+    """餘額多次讀取取多數決，過濾偶發辨識誤差（5/8/9 看錯、逗號誤讀成多/少一位）。
+
+    餘額在整點當下是靜止的，正確值會在多次讀取中勝出；偶發錯誤被洗掉。
+    讀 samples 次，取出現最多的非零值；達到 min_agree 次一致才採信，否則回 0
+    （視為這次讀取不可靠，交由整點補上傳機制稍後重試）。
+    """
+    import time
+
+    vals: list[int] = []
+    for i in range(max(1, samples)):
+        try:
+            v = read_once()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("餘額單次讀取例外：%s", exc)
+            v = 0
+        if v > 0:
+            vals.append(v)
+        if i + 1 < samples:
+            time.sleep(0.12)
+    if not vals:
+        return 0
+    val, cnt = Counter(vals).most_common(1)[0]
+    if cnt < min_agree:
+        logger.info(
+            "餘額多次讀取無共識（樣本=%s，最高一致=%d<%d），本次不採信、稍後重試",
+            vals, cnt, min_agree,
+        )
+        return 0
+    return int(val)
 
 
 def in_baccarat_room(cfg: AppConfig) -> bool | None:

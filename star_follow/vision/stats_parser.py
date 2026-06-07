@@ -63,19 +63,56 @@ def extract_stats_table(frame: np.ndarray, cfg: AppConfig) -> tuple[np.ndarray, 
     return frame[y : y + h, x : x + w].copy(), list(rect)
 
 
+def _player_cols(layout: dict) -> int:
+    """百家樂統計表的玩家座位數（固定 7）。可由 config stats_layout.player_cols 覆寫。"""
+    try:
+        n = int(layout.get("player_cols", 7))
+    except (TypeError, ValueError):
+        n = 7
+    return max(1, min(_MAX_PLAYER_COLS, n))
+
+
 def _column_layout(table_w: int, layout: dict) -> tuple[int, list[tuple[int, int]]]:
     label_frac = float(layout.get("label_col_frac", 0.11))
     label_w = max(40, int(table_w * label_frac))
     remain = table_w - label_w
-    col_w = max(50, remain // _MAX_PLAYER_COLS)
+    n = _player_cols(layout)
+    col_w = max(50, remain // n)
     cols = []
-    for i in range(_MAX_PLAYER_COLS):
+    for i in range(n):
         x0 = label_w + i * col_w
         x1 = min(table_w, x0 + col_w)
         if x1 - x0 < 30:
             break
         cols.append((x0, x1))
     return label_w, cols
+
+
+def _pad_columns_to(
+    cols: list[tuple[int, int]], table_w: int, target: int
+) -> list[tuple[int, int]]:
+    """格線偵測常因最右欄外框線偵測不到而少抓 1～2 欄（7 人桌只讀到 6 欄，對象在
+    最右就被誤判「不在房」）。用偵測到的欄寬中位數，往右補到 target 欄（補到表格右緣
+    為止）。若裁切範圍本身太窄裝不下，補出的欄會被夾到右緣（仍比完全沒有好）。
+    """
+    if not cols:
+        return cols
+    if len(cols) >= target:
+        return cols[:target]
+    widths = sorted(b - a for a, b in cols)
+    col_w = widths[len(widths) // 2]
+    if col_w < 30:
+        return cols
+    out = list(cols)
+    x = out[-1][1]
+    while len(out) < target and x + 32 < table_w:
+        x0 = x + 2
+        x1 = min(table_w, x0 + col_w)
+        if x1 - x0 < 32:
+            break
+        out.append((x0, x1))
+        x = x1
+    return out
 
 
 def detect_column_bounds(
@@ -133,13 +170,17 @@ def detect_column_bounds(
 
 
 def _columns_for(table: "np.ndarray", layout: dict) -> tuple[int, list[tuple[int, int]]]:
+    target = _player_cols(layout)
     if layout.get("detect_grid", True):
         try:
             det = detect_column_bounds(table, layout)
         except Exception:
             det = None
         if det and len(det[1]) >= 1:
-            return det
+            label_w, cols = det
+            # 補回偵測不到外框線而漏掉的最右欄（7 人桌常只抓到 6 欄）
+            cols = _pad_columns_to(cols, table.shape[1], target)
+            return label_w, cols
     return _column_layout(table.shape[1], layout)
 
 

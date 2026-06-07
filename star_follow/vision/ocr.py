@@ -117,6 +117,8 @@ def ocr_balance(img: np.ndarray) -> tuple[int, float]:
     # 亮字深底：取亮的像素為前景，再反白成「黑字白底」給 Tesseract
     _, th = cv2.threshold(gray, 130, 255, cv2.THRESH_BINARY)
     th = cv2.bitwise_not(th)
+    # 不再「取最長」（會偏向把逗號誤讀成數字而多一位）；改用單行 psm 7 為主，
+    # 只有 psm 7 讀不到時才退而用 psm 6。多一位/少一位的偶發誤差由上層多次取多數決處理。
     best = ""
     for psm in (7, 6):
         config = f"--psm {psm} -c tessedit_char_whitelist=0123456789,"
@@ -125,8 +127,9 @@ def ocr_balance(img: np.ndarray) -> tuple[int, float]:
         except pytesseract.TesseractError:
             continue
         digits = _DIGITS.sub("", raw)
-        if len(digits) > len(best):
+        if digits:
             best = digits
+            break
     if not best:
         return 0, 0.0
     try:

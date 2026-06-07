@@ -154,7 +154,9 @@ class SheetUploader:
         if in_baccarat_room(self.cfg) is not True:
             logger.info("餘額上傳：目前不在牌桌內，暫不辨識餘額（稍後重試）")
             return False
-        balance = read_balance_once(self.cfg)
+        from star_follow.monitor.screen_gate import stable_balance
+
+        balance = stable_balance(lambda: read_balance_once(self.cfg))
         if balance <= 0:
             logger.info("餘額上傳：暫時讀不到餘額（視窗未開或 OCR 失敗），稍後重試")
             return False

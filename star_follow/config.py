@@ -107,11 +107,17 @@ class RoomConfig:
     stay_table: int = 0
     # 掛房指定追蹤對象（覆寫 follow_list.json）。空 = 沿用 follow_list.json。
     stay_targets: list[str] = field(default_factory=list)
-    # 掛房：當「指定對象全部都不在這桌」時，暫停跟注（不防踢補注、被踢也不自動回桌）。
+    # 掛房：是否偵測「指定對象全部都不在這桌」。
     stay_pause_when_targets_absent: bool = True
-    # 連續這麼多局都讀不到任何指定對象，才判定「對象全離桌」並暫停（容忍偶發漏讀）。
+    # 連續這麼多局都讀不到任何指定對象，才判定「對象全離桌」（容忍偶發漏讀）。
     stay_absent_rounds_to_pause: int = 1
-    # 對象全離桌：發 TG 後停止引擎（false 則僅暫停、不回桌）
+    # 對象全離桌時的處置（stay_on_absent）：
+    #   keep  = 只發 TG 通知，但程式照常跑（繼續防踢補注、被踢照樣自動回桌），
+    #           待對象某局又出現就自動恢復跟注（推薦，最不會卡）。
+    #   pause = 發 TG 後暫停跟注（不防踢、被踢也不回桌），但程式不結束。
+    #   stop  = 發 TG 後直接停止程式。
+    stay_on_absent: str = "keep"
+    # 舊設定（相容用）：對象全離桌→停止程式。僅在未設定 stay_on_absent 時生效。
     stay_stop_when_targets_absent: bool = True
 
 
@@ -202,6 +208,20 @@ def _rect(d: dict[str, Any], key: str, default: list[int]) -> list[int]:
     if isinstance(v, dict):
         return [int(v["x"]), int(v["y"]), int(v["w"]), int(v["h"])]
     return [int(x) for x in v]
+
+
+def _resolve_stay_on_absent(rm: dict[str, Any]) -> str:
+    """決定對象全離桌的處置模式。優先用 stay_on_absent；沒設才從舊旗標推導，
+    確保舊 config（只有 stay_stop_when_targets_absent）行為不變。"""
+    raw = rm.get("stay_on_absent")
+    if raw:
+        v = str(raw).strip().lower()
+        if v in ("keep", "pause", "stop"):
+            return v
+    # 舊設定相容：有停止旗標→stop；否則→pause（舊「暫停」語意）
+    if bool(rm.get("stay_stop_when_targets_absent", True)):
+        return "stop"
+    return "pause"
 
 
 def load_config(path: Path | str | None = None) -> AppConfig:
@@ -300,6 +320,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
             stay_pause_when_targets_absent=bool(rm.get("stay_pause_when_targets_absent", True)),
             stay_absent_rounds_to_pause=int(rm.get("stay_absent_rounds_to_pause", 1)),
             stay_stop_when_targets_absent=bool(rm.get("stay_stop_when_targets_absent", True)),
+            stay_on_absent=_resolve_stay_on_absent(rm),
         ),
         betting=BettingConfig(
             follow_exclude=[str(x) for x in (bt.get("follow_exclude") or ["莊", "閒"])],
@@ -426,6 +447,7 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
         "stay_pause_when_targets_absent": cfg.room.stay_pause_when_targets_absent,
         "stay_absent_rounds_to_pause": cfg.room.stay_absent_rounds_to_pause,
         "stay_stop_when_targets_absent": cfg.room.stay_stop_when_targets_absent,
+        "stay_on_absent": cfg.room.stay_on_absent,
     }
     data["betting"] = {
         "follow_exclude": cfg.betting.follow_exclude,

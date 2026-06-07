@@ -46,6 +46,22 @@ class CountdownTracker:
         logger.info("倒數錨定 T=%s（之後由軟體每秒遞減）", t)
         return True
 
+    def force_anchor(self, t: int) -> bool:
+        """強制以指定 T 起算軟體倒數（用於半路開局、來不及在 T=19～20 錨定時）。
+
+        正常 try_anchor 只接受 T=19～20；但若機器較慢沒抓到那一窗、改用 OCR 從
+        中途開局，開統計表後表會蓋住倒數數字 → OCR 讀不到 → 沒有軟體時鐘就會卡死。
+        這裡用開局當下的 T 起算，讓倒數即使被表蓋住也照跑，本局才能正常走到定稿。
+        """
+        if self._anchor_t is not None:
+            return False
+        if t is None or t <= 0:
+            return False
+        self._anchor_t = int(t)
+        self._anchor_mono = time.monotonic()
+        logger.info("倒數改以開局 T=%s 起算軟體倒數（未在 19~20 錨定，半路接局）", t)
+        return True
+
     def _estimate(self) -> int | None:
         if self._anchor_t is None or self._anchor_mono is None:
             return None

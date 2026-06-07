@@ -589,13 +589,19 @@ def main() -> int:
         print(f"掛房追蹤對象：{('、'.join(tgt) if tgt else '（無）')}")
         if engine.cfg.room.stay_pause_when_targets_absent:
             n = engine.cfg.room.stay_absent_rounds_to_pause
-            if getattr(engine.cfg.room, "stay_stop_when_targets_absent", True):
+            mode = (getattr(engine.cfg.room, "stay_on_absent", "keep") or "keep").lower()
+            if mode == "stop":
                 print(
                     f"對象全離桌偵測：連續 {n} 局統計表都讀不到任何對象 → Telegram 通知後停止程式"
                 )
+            elif mode == "pause":
+                print(
+                    f"對象全離桌偵測：連續 {n} 局都讀不到任何對象 → Telegram 通知後暫停跟注、不回桌"
+                )
             else:
                 print(
-                    f"對象全離桌偵測：連續 {n} 局都讀不到任何對象 → 暫停跟注、不回桌"
+                    f"對象全離桌偵測：連續 {n} 局都讀不到任何對象 → Telegram 通知，但持續防踢守桌，"
+                    "對象回來自動恢復跟注"
                 )
     if engine.dry_run:
         print("真下注：python -m star_follow.tools.run --live")

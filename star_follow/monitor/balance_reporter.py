@@ -129,7 +129,9 @@ class BalanceReporter:
         if in_baccarat_room(self.cfg) is not True:
             logger.info("餘額回報：目前不在牌桌內，暫不辨識餘額（下次再報）")
             return
-        amount, _img = read_balance_once(self.cfg)
+        from star_follow.monitor.screen_gate import stable_balance
+
+        amount = stable_balance(lambda: read_balance_once(self.cfg)[0])
         if amount <= 0:
             logger.info("餘額回報：暫時讀不到餘額（視窗未開或 OCR 失敗），稍後再試")
             return

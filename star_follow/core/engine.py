@@ -104,7 +104,8 @@ class FollowEngine:
         self._locked_since_mono = 0.0  # 進入 LOCKED 的時點（時間保險用）
         self._stay_idle_rounds = 0  # 掛房：連續沒下注的局數（防踢用）
         self._stay_absent_streak = 0  # 掛房：連續沒讀到任何指定對象的局數
-        self._stay_paused = False  # 掛房：對象全離桌 → 暫停跟注、不回桌
+        self._stay_paused = False  # 掛房：pause 模式下對象全離桌 → 停跟注/防踢/回桌
+        self._stay_absent_active = False  # 掛房：目前是否處於「對象全離桌」狀態（各模式共用）
         self._stay_pause_notified = False  # 已對「對象全離桌」發過 TG
         self._last_stay_pause_log_mono = 0.0
         self._stopped_reason: str | None = None
@@ -113,6 +114,7 @@ class FollowEngine:
         self._last_idle_wait_log_mono = 0.0
         self._win_logged = False
         self._last_nav_check_mono = 0.0
+        self._last_table_verify_mono = 0.0  # 掛房：上次核對「是否在指定桌」的時點
         self._cached_screen = "table"
         self._last_kick_check_mono = 0.0
         # 換房模式狀態
@@ -1056,6 +1058,42 @@ class FollowEngine:
         logger.info("掛房已回到牌桌，恢復跟注（30s 內不因畫面閃爍重跑回桌）")
         return True
 
+    def _stay_ensure_target_table(self, win) -> bool:
+        """掛房固定桌號：人在牌桌、但不是指定桌（例如回桌時指定桌滿桌、落在別桌）→
+        持續嘗試切回指定桌。回傳 True 表示本輪已處理（呼叫端應結束本輪）。
+
+        關鍵：每輪都獨立用左下角桌號重新判斷，所以
+          - 滿桌切不過去 → 下一輪再試（一直優先回指定桌）；
+          - 切桌過程又被踢出 → 下一輪會先被「不在牌桌」分支接住、重新進場，
+            不會卡在「一直換房卻沒發現又被踢」的狀態。
+        讀不到桌號就不動作（避免誤切）。
+        """
+        target = self.cfg.room.stay_table
+        if self.cfg.room.mode != "stay" or not target:
+            return False
+        now = time.monotonic()
+        if now - self._last_table_verify_mono < 5.0:
+            return False
+        self._last_table_verify_mono = now
+        if now < self._stay_at_table_grace_until:
+            return False
+        from star_follow.automation.room_nav import read_current_table, switch_to_table
+
+        cur = read_current_table(capture_client(win), self.cfg, win)
+        if cur is None or cur == target:
+            return False
+        logger.info("掛房：目前在 No.%s，非指定桌 No.%s → 嘗試切回", cur, target)
+        if switch_to_table(win, self.cfg, target, capture_fn=lambda: capture_client(win)):
+            logger.info("已切回指定桌號 No.%s", target)
+            self.phase = Phase.IDLE
+            self.ctx = RoundContext()
+            self._cd_tracker.reset()
+            self._col_cache = {}
+            self._stay_at_table_grace_until = time.monotonic() + 30.0
+        else:
+            logger.warning("指定桌 No.%s 目前切不過去（可能滿桌），下一輪再試", target)
+        return True
+
     def _update_stay_presence(self) -> None:
         """掛房：依本局是否讀到任何指定對象，更新「對象全離桌→暫停／停止」狀態。
 
@@ -1065,13 +1103,15 @@ class FollowEngine:
         """
         if self.cfg.room.mode != "stay" or not self.cfg.room.stay_pause_when_targets_absent:
             return
+        on_absent = (getattr(self.cfg.room, "stay_on_absent", "keep") or "keep").lower()
         present = len(self.ctx.resolved_columns) > 0
         table_tag = f"No.{self.cfg.room.stay_table}" if self.cfg.room.stay_table else "本桌"
         if present:
-            if self._stay_paused:
-                logger.info("追蹤對象回到%s，解除暫停，恢復跟注", table_tag)
+            if self._stay_absent_active:
+                logger.info("追蹤對象回到%s，恢復跟注", table_tag)
                 self._notify_targets_gone(f"追蹤對象已回到 {table_tag}，恢復跟注")
             self._stay_absent_streak = 0
+            self._stay_absent_active = False
             self._stay_paused = False
             self._stay_pause_notified = False
             return
@@ -1085,28 +1125,49 @@ class FollowEngine:
             self._stay_absent_streak,
         )
         need = max(1, self.cfg.room.stay_absent_rounds_to_pause)
-        if self._stay_absent_streak >= need and not self._stay_paused:
+        if self._stay_absent_streak < need:
+            return
+        self._stay_absent_active = True
+        msg = f"{table_tag} 統計表未見任何追蹤對象"
+
+        if on_absent == "stop":
             self._stay_paused = True
-            msg = f"{table_tag} 統計表未見任何追蹤對象"
             if not self._stay_pause_notified:
                 self._stay_pause_notified = True
-                if getattr(self.cfg.room, "stay_stop_when_targets_absent", True):
-                    self._notify_targets_gone(f"{msg}，程式即將停止")
-                else:
-                    self._notify_targets_gone(f"{msg}，暫停跟注")
-            if getattr(self.cfg.room, "stay_stop_when_targets_absent", True):
-                logger.warning(
-                    "連續 %d 局都沒有任何指定對象在%s → 停止程式",
-                    self._stay_absent_streak,
-                    table_tag,
-                )
-                self.stop()
-                return
+                self._notify_targets_gone(f"{msg}，程式即將停止")
+            logger.warning(
+                "連續 %d 局都沒有任何指定對象在%s → 停止程式",
+                self._stay_absent_streak, table_tag,
+            )
+            self.stop()
+            return
+
+        if on_absent == "pause":
+            self._stay_paused = True
+            if not self._stay_pause_notified:
+                self._stay_pause_notified = True
+                self._notify_targets_gone(f"{msg}，暫停跟注（不防踢、被踢不回桌）")
             logger.warning(
                 "連續 %d 局都沒有任何指定對象在%s → 暫停跟注（不防踢、被踢也不自動回桌）",
-                self._stay_absent_streak,
+                self._stay_absent_streak, table_tag,
+            )
+            return
+
+        # keep（預設）：只通知，程式照常跑——繼續防踢補注、被踢照樣自動回桌，
+        # 待對象某局又出現就自動恢復跟注。
+        self._stay_paused = False
+        if not self._stay_pause_notified:
+            self._stay_pause_notified = True
+            self._notify_targets_gone(
+                f"{msg}，持續防踢並守住{table_tag}，待對象回來自動恢復跟注"
+            )
+        now = time.perf_counter()
+        if now - self._last_stay_pause_log_mono >= 15.0:
+            logger.info(
+                "對象全離桌（keep）：持續防踢補注／被踢自動回桌，守住%s 待對象回來",
                 table_tag,
             )
+            self._last_stay_pause_log_mono = now
 
     def _maybe_anti_kick(self, frame, t_bet: int | None, cd_color: CountdownColor) -> bool:
         """掛房防踢：連續多局沒下注時，自己補一手最小注（莊/閒）避免被系統踢出。
@@ -1249,6 +1310,9 @@ class FollowEngine:
                 self._stay_return_to_table(win)
                 return True
             self._cached_screen = "table"
+            # 在牌桌但可能不是指定桌（回桌時指定桌滿桌、落在別桌）→ 持續切回指定桌
+            if self._stay_ensure_target_table(win):
+                return True
 
         frame = capture_client(win)
 
