@@ -30,6 +30,52 @@ class StatsParseResult:
 _SKIP_NAMES = {"注區", "玩家", "押注統計", "總計", ""}
 _MAX_PLAYER_COLS = 8
 
+# 統計表診斷：偵測不到任何追蹤對象時，存「表格＋逐欄表頭裁切＋OCR 結果」供校正。
+_STATS_DEBUG = True
+import logging as _logging
+
+_sp_logger = _logging.getLogger(__name__)
+
+
+def _save_stats_debug(
+    table: np.ndarray,
+    header: np.ndarray,
+    cols: list[tuple[int, int]],
+    names: list[str],
+    targets: list[str],
+) -> None:
+    """存統計表診斷圖：整張表 + 表頭那排，檔名帶讀到的名字，供事後對照欄位是否切歪／
+    名字是否被切掉。只在偵測不到對象時呼叫，並自動只留最近數十組。"""
+    if not _STATS_DEBUG:
+        return
+    try:
+        from PIL import Image
+
+        from star_follow.paths import logs_dir
+
+        d = logs_dir() / "stats_debug"
+        d.mkdir(parents=True, exist_ok=True)
+        files = sorted(d.glob("*.png"), key=lambda p: p.stat().st_mtime)
+        for p in files[: max(0, len(files) - 60)]:
+            p.unlink(missing_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        seen = "_".join(n for n in names if n)[:40] or "none"
+        Image.fromarray(np.asarray(table)).save(str(d / f"{ts}_table_seen-{seen}.png"))
+        # 逐欄表頭裁切（看每一欄到底框到什麼、名字有沒有被切掉）
+        for idx, (x0, x1) in enumerate(cols):
+            cell = header[:, x0:x1]
+            if getattr(cell, "size", 0):
+                nm = names[idx] if idx < len(names) else ""
+                Image.fromarray(np.asarray(cell)).save(
+                    str(d / f"{ts}_col{idx}-{nm or 'empty'}.png")
+                )
+        _sp_logger.info(
+            "統計表診斷已存 logs\\stats_debug：欄數=%d 讀到名字=%s 目標=%s",
+            len(cols), [n for n in names if n], targets,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _sp_logger.debug("存統計表診斷圖失敗：%s", exc)
+
 
 def _crop_rel(img: np.ndarray, x0: float, y0: float, x1: float, y1: float) -> np.ndarray:
     h, w = img.shape[:2]
@@ -210,22 +256,43 @@ def _manual_columns(
     return x0, cols
 
 
+_COL_MODE_LOGGED = False
+
+
 def _columns_for(table: "np.ndarray", layout: dict) -> tuple[int, list[tuple[int, int]]]:
+    """決定 7 個玩家欄的左右界。
+
+    固定 7 座位的 UI：一律等分成 target 欄（中間沒人就讀空白），不用會在空欄斷掉的
+    格線偵測（那會造成「第 N 欄之後全當沒人」、對象在右側卻被判不在房）。
+    優先序：手動 player_band > 等分法 _column_layout。只有明確 detect_grid:true 時才
+    試格線，且結果必須補滿到 target 欄才採用，否則仍退回等分法。
+    """
+    global _COL_MODE_LOGGED
     target = _player_cols(layout)
     manual = _manual_columns(table.shape[1], layout)
     if manual is not None:
+        if not _COL_MODE_LOGGED:
+            _sp_logger.info("欄位偵測：手動 player_band 等分 %d 欄", len(manual[1]))
+            _COL_MODE_LOGGED = True
         return manual
-    if layout.get("detect_grid", True):
+    if layout.get("detect_grid", False):
         try:
             det = detect_column_bounds(table, layout)
         except Exception:
             det = None
         if det and len(det[1]) >= 1:
             label_w, cols = det
-            # 補回偵測不到外框線而漏掉的最右欄（7 人桌常只抓到 6 欄）
             cols = _pad_columns_to(cols, table.shape[1], target)
-            return label_w, cols
-    return _column_layout(table.shape[1], layout)
+            if len(cols) >= target:
+                if not _COL_MODE_LOGGED:
+                    _sp_logger.info("欄位偵測：格線+補欄 共 %d 欄", len(cols))
+                    _COL_MODE_LOGGED = True
+                return label_w, cols
+    fallback = _column_layout(table.shape[1], layout)
+    if not _COL_MODE_LOGGED:
+        _sp_logger.info("欄位偵測：等分法（label_col_frac）共 %d 欄", len(fallback[1]))
+        _COL_MODE_LOGGED = True
+    return fallback
 
 
 def _clean_name(name: str) -> str:
@@ -545,6 +612,19 @@ def parse_stats_table(
                     continue
                 resolved[name] = col
                 bets_by_column[col] = _parse_single_column(table, col, rows, layout)
+            if not resolved and follow_targets:
+                # 偵測不到任何對象：存診斷圖（整張表＋逐欄表頭裁切）供校正欄位/名字切位
+                band = layout.get("header_band", [0.0, 0.0, 1.0, 0.12])
+                if isinstance(band, list) and len(band) == 4:
+                    hdr = _crop_rel(table, band[0], band[1], band[2], band[3])
+                else:
+                    hdr = table[: max(20, int(table.shape[0] * 0.12)), :]
+                _, dcols = _columns_for(table, layout)
+                _save_stats_debug(
+                    table, hdr, dcols,
+                    [n for _, n in headers],
+                    [n for n, _ in follow_targets],
+                )
         elapsed = (time.perf_counter() - t0) * 1000
         return StatsParseResult(
             players=players,

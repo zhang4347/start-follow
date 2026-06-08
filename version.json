@@ -1,6 +1,6 @@
 {
-  "version": "1.2.19",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.19/StarFollow_1.2.19.zip",
-  "sha256": "c4534d215a050137eb35e34e322bb62221860ce1dcc50a6a4d0b5b0fd7a019c1",
-  "notes": "餘額辨識改用黃字遮罩+逐位辨識（濾掉逗號、不確定就重試不硬報），大幅減少讀錯；截圖暫時失敗（視窗最小化/螢幕休眠鎖定）改為乾淨暫停重試、畫面恢復自動接續，不再崩潰洗版；啟動自動清理7天前的舊log與診斷圖"
+  "version": "1.2.20",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.20/StarFollow_1.2.20.zip",
+  "sha256": "eca1db4f8edbe459c15805f838b399b05bd0fb52ad76c4b2687b21bf1f314bec",
+  "notes": "統計表固定切7欄（中間沒人讀空白），不再因空欄斷掉漏看右側對象、對象在場卻判不在房；防踢補注提前：對象確認離桌且本局將達門檻時跳過慢統計、立刻用有效倒數補一手，避免來不及被踢；Telegram通知SSL驗證失敗時改用免驗證重試，確保通知不漏發；偵測不到對象自動存統計表診斷圖供校正"
 }

@@ -943,6 +943,24 @@ class FollowEngine:
         win = self._win
         t0 = time.perf_counter()
 
+        # 防踢優先（慢機器保險）：對象已確認離桌、且本局再沒下注就達補注門檻時，
+        # 不做後面 4~5 秒的統計 OCR（會把下注窗吃掉→補注失敗→被踢），改為立刻關表、
+        # 用還有效的倒數補一手防踢。下一局再讀統計偵測對象是否回來。
+        if self._should_early_anti_kick():
+            if not self._close_stats_panel(capture_client(win)):
+                self._recover_ui(capture_client(win), "防踢前關表失敗")
+            t_bet, cd_color = self._read_cd_real()
+            bet_t = t_bet if t_bet is not None else t
+            bet_color = cd_color if t_bet is not None else cd.color
+            self._stay_idle_rounds += 1
+            logger.info(
+                "對象離桌＋將達防踢門檻：跳過慢統計，提前補注（T=%s）", bet_t
+            )
+            if not self._maybe_anti_kick(frame, bet_t, bet_color):
+                self._save_round(frame, t_bet, bet=False)
+            self._enter_locked()
+            return
+
         # 1b：定稿讀數前確保停在最底（表頭固定，一張就含所有邊注），並重取畫面
         if self._bottom_read_enabled():
             self._scroll_stats_to_bottom()
@@ -1169,6 +1187,20 @@ class FollowEngine:
                 table_tag,
             )
             self._last_stay_pause_log_mono = now
+
+    def _should_early_anti_kick(self) -> bool:
+        """是否本局直接補防踢、跳過慢統計 OCR。
+
+        條件：開了防踢、沒被暫停、對象已『確認離桌』(連續離桌達門檻)、且這局再沒下注
+        累計就會達到補注門檻。此時沒有對象可跟，提前補注純賺（避免慢機器被踢）。
+        對象在場時不走這條（仍照常讀統計跟注）。
+        """
+        bcfg = self.cfg.betting
+        if not bcfg.anti_kick_enabled or self._stay_paused:
+            return False
+        if not self._stay_absent_active:
+            return False
+        return self._stay_idle_rounds + 1 >= bcfg.anti_kick_idle_rounds
 
     def _maybe_anti_kick(self, frame, t_bet: int | None, cd_color: CountdownColor) -> bool:
         """掛房防踢：連續多局沒下注時，自己補一手最小注（莊/閒）避免被系統踢出。
