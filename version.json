@@ -1,6 +1,6 @@
 {
-  "version": "1.2.26",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.26/StarFollow_1.2.26.zip",
-  "sha256": "cbb41354c5a5faa206456c385ad398ea1252e7a9d55b7c17fab73f30ef7760c6",
-  "notes": "表頭 OCR 加強：跑完全部前處理步驟再取候選（不再 early-return）、過濾 Tesseract 假字；4 字以上暱稱 fuzzy 門檻調為 0.7（3 字以下仍 0.95）；極難辨識名（如貳刀流聾）仍可能無法追蹤"
+  "version": "1.2.27",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.27/StarFollow_1.2.27.zip",
+  "sha256": "59d5b0c9568e5c1676c7149272bd3ebdefab73b45fc36a711dc3e1eac0b66b87",
+  "notes": "掛房防踢加強：首次 OCR 追到對象時先補一手閒（抵消暖機期遊戲端閒置）；表頭讀不到時不計防踢閒置，但表頭有名字、對象真的不在房時仍照常累計並補注。含 v1.2.26 表頭 OCR 全候選比對與 fuzzy 門檻 0.7"
 }

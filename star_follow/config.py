@@ -132,6 +132,8 @@ class BettingConfig:
     anti_kick_idle_rounds: int = 3   # 連續幾局沒下注就補注
     anti_kick_side: str = "閒"        # 補注下哪一邊（莊/閒）
     anti_kick_amount: int = 0         # 補注金額，0=用最小籌碼
+    # 掛房：首次 OCR 追到對象時先補一手閒（抵消進桌/OCR 暖機的閒置），之後才累計未下注局數
+    anti_kick_first_track_bet: bool = True
 
 
 # 內建 Telegram 通知預設：放在「程式碼」裡，才會被打包進 exe，並隨自動更新送到
@@ -328,6 +330,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
             anti_kick_idle_rounds=int(bt.get("anti_kick_idle_rounds", 3)),
             anti_kick_side=str(bt.get("anti_kick_side", "閒")),
             anti_kick_amount=int(bt.get("anti_kick_amount", 0)),
+            anti_kick_first_track_bet=bool(bt.get("anti_kick_first_track_bet", True)),
         ),
         telegram=TelegramConfig(
             enabled=bool(tg.get("enabled", False)),
@@ -455,6 +458,7 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
         "anti_kick_idle_rounds": cfg.betting.anti_kick_idle_rounds,
         "anti_kick_side": cfg.betting.anti_kick_side,
         "anti_kick_amount": cfg.betting.anti_kick_amount,
+        "anti_kick_first_track_bet": cfg.betting.anti_kick_first_track_bet,
     }
     data["telegram"] = {
         "enabled": cfg.telegram.enabled,

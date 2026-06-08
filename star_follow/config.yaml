@@ -88,6 +88,7 @@ betting:
   anti_kick_idle_rounds: 3
   anti_kick_side: 閒
   anti_kick_amount: 1000
+  anti_kick_first_track_bet: true
 telegram:
   enabled: false
   bot_token: 8893028334:AAGNJQt5djgMjjmCswxfwTUdh2h7VdvoXMM
