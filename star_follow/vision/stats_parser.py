@@ -10,7 +10,13 @@ import numpy as np
 from star_follow.config import AppConfig
 
 from . import ocr as ocr_mod
-from .ocr import ocr_amount, ocr_chinese_line, ocr_chinese_paddle, ocr_name_cell
+from .ocr import (
+    ocr_amount,
+    ocr_chinese_line,
+    ocr_chinese_paddle,
+    ocr_name_candidates,
+    ocr_name_cell,
+)
 from .roi import scale_rect
 from .stats_table_roi import find_stats_table_in_panel
 
@@ -330,37 +336,81 @@ def set_header_ocr(use_paddle: bool) -> None:
     _USE_PADDLE_HEADER = use_paddle
 
 
-def _ocr_header_name(cell: np.ndarray) -> str:
-    """玩家暱稱（中文）：可選 PaddleOCR；否則用放大+Otsu 的 Tesseract。"""
+def _ocr_header_cands(cell: np.ndarray) -> list[str]:
+    """玩家暱稱候選（中文）：PaddleOCR 可用就用它；否則用多倍率＋多二值化的 Tesseract。
+
+    回傳「多個候選」而非單一字串：比對時拿目標去比所有候選取最佳，只要任一種前處理讀對
+    （或接近）就配得到，大幅降低單一門檻把整欄切壞而落空的風險。
+    """
     if _USE_PADDLE_HEADER:
         try:
-            name, conf = ocr_chinese_paddle(cell)
+            name, _ = ocr_chinese_paddle(cell)
+            name = _clean_name(name)
             if name:
-                return _clean_name(name)
+                return [name]
         except Exception:
             pass
-    name, _ = ocr_name_cell(cell)
-    return _clean_name(name)
+    return [_clean_name(c) for c in ocr_name_candidates(cell) if _clean_name(c)]
 
 
-def read_column_headers(table: np.ndarray, layout: dict) -> list[tuple[int, str]]:
-    """讀取各玩家欄表頭暱稱，回傳 (欄位索引, 名稱)。"""
+def _pick_consensus(cands: list[str]) -> str:
+    """從候選中挑「跟其他候選最相似」者（雜訊離群值會被排除）；供顯示/記錄用。"""
+    if not cands:
+        return ""
+    if len(cands) == 1:
+        return cands[0]
+    return max(
+        cands,
+        key=lambda c: sum(
+            difflib.SequenceMatcher(None, c, o).ratio() for o in cands if o is not c
+        ),
+    )
+
+
+def _ocr_header_name(cell: np.ndarray) -> str:
+    """單一暱稱（共識挑選），供顯示/記錄用。"""
+    return _pick_consensus(_ocr_header_cands(cell))
+
+
+def _header_cells(table: np.ndarray, layout: dict) -> list[tuple[int, np.ndarray]]:
     band = layout.get("header_band", [0.0, 0.0, 1.0, 0.12])
     if isinstance(band, list) and len(band) == 4:
         header = _crop_rel(table, band[0], band[1], band[2], band[3])
     else:
         header = table[: max(20, int(table.shape[0] * 0.12)), :]
     _, cols = _columns_for(table, layout)
-    out: list[tuple[int, str]] = []
-    for idx, (x0, x1) in enumerate(cols):
-        cell = header[:, x0:x1]
-        out.append((idx, _ocr_header_name(cell)))
-    return out
+    return [(idx, header[:, x0:x1]) for idx, (x0, x1) in enumerate(cols)]
+
+
+def read_column_header_cands(
+    table: np.ndarray, layout: dict
+) -> list[tuple[int, list[str]]]:
+    """讀各欄表頭暱稱「候選清單」，回傳 (欄位索引, [候選名...])。"""
+    return [(idx, _ocr_header_cands(cell)) for idx, cell in _header_cells(table, layout)]
+
+
+def read_column_headers(table: np.ndarray, layout: dict) -> list[tuple[int, str]]:
+    """讀取各玩家欄表頭暱稱（共識單名），回傳 (欄位索引, 名稱)。"""
+    return [
+        (idx, _pick_consensus(cands))
+        for idx, cands in read_column_header_cands(table, layout)
+    ]
 
 
 # 跟注是真金白銀，比對要「精準優先」：寧可錯過也不要跟錯路人。
-_NAME_MATCH_CUTOFF = 0.8   # 模糊比對最低相似度（容忍約 1 個字的 OCR 誤差）
 _NAME_MATCH_MARGIN = 0.08  # 最佳與第二名差距需大於此值，否則視為無法分辨→不跟
+
+
+def _name_cutoff(target: str) -> float:
+    """依名字長度算「容許剛好錯 1 個字」的相似度門檻。
+
+    SequenceMatcher 對長度 L、差 1 字的字串相似度 = (L-1)/L。短名（<=3 字）要求幾乎
+    完全相同，避免「錯 1 字 = 相似度太低」反而把路人也放進來。
+    """
+    L = len(target)
+    if L <= 3:
+        return 0.95
+    return (L - 1) / L - 0.02
 
 
 def _norm_name(s: str) -> str:
@@ -380,43 +430,58 @@ def _norm_name(s: str) -> str:
     return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", t)
 
 
+def find_column_for_player_cands(
+    cand_headers: list[tuple[int, list[str]]],
+    player_name: str,
+    hint: int | None = None,
+) -> int | None:
+    """用「每欄多個候選」比對：每欄取候選對目標的最佳相似度，再套精準+領先守則。
+
+    比對相似度用該欄所有候選的最大值（任一種前處理讀對就算數），但仍要求最佳欄明顯勝過
+    第二名，避免跟到名字相近的路人。寧可錯過也不跟錯。
+    """
+    target = _norm_name(player_name)
+    if not target:
+        return None
+    scored: list[tuple[float, int]] = []
+    for idx, cands in cand_headers:
+        best = 0.0
+        for c in cands:
+            n = _norm_name(c)
+            if not n:
+                continue
+            r = 1.0 if n == target else difflib.SequenceMatcher(None, target, n).ratio()
+            if r > best:
+                best = r
+        if best > 0:
+            scored.append((best, idx))
+    if not scored:
+        return None
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    exact = [idx for r, idx in scored if r >= 0.999]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        return hint if (hint is not None and hint in exact) else None
+
+    best_r, best_idx = scored[0]
+    if best_r < _name_cutoff(target):
+        return None
+    if len(scored) > 1 and scored[1][0] >= best_r - _NAME_MATCH_MARGIN:
+        return None
+    return best_idx
+
+
 def find_column_for_player(
     headers: list[tuple[int, str]],
     player_name: str,
     hint: int | None = None,
 ) -> int | None:
-    """在所有表頭中找出「最符合」這個暱稱的欄；精準優先，找不到夠像的就回 None。"""
-    target = _norm_name(player_name)
-    if not target:
-        return None
-    named = [(idx, _norm_name(name)) for idx, name in headers if name]
-    named = [(idx, n) for idx, n in named if n]
-    if not named:
-        return None
-
-    # 1) 正規化後完全相同（最可靠）
-    exact = [idx for idx, n in named if n == target]
-    if len(exact) == 1:
-        return exact[0]
-    if len(exact) > 1:
-        # 罕見：多欄同名 → 用 hint 才能確定，否則放棄（不亂猜）
-        return hint if (hint is not None and hint in exact) else None
-
-    # 2) 高相似度模糊比對：取最佳，且需明顯勝過第二名，避免跟到名字相近的路人
-    scored = sorted(
-        (
-            (difflib.SequenceMatcher(None, target, n).ratio(), idx)
-            for idx, n in named
-        ),
-        key=lambda x: x[0],
-        reverse=True,
+    """相容介面：單一名字版，轉成候選版比對。"""
+    return find_column_for_player_cands(
+        [(idx, [name]) for idx, name in headers], player_name, hint=hint
     )
-    best_r, best_idx = scored[0]
-    if best_r < _NAME_MATCH_CUTOFF:
-        return None
-    if len(scored) > 1 and scored[1][0] >= best_r - _NAME_MATCH_MARGIN:
-        return None
-    return best_idx
 
 
 def _parse_single_column(
@@ -505,9 +570,10 @@ def resolve_follow_columns(
 
     # 一律讀表頭重新確認欄位；hint 只當提示，不直接採用（換桌後舊欄位會指到路人）。
     resolved: dict[str, int] = {}
-    headers: list[tuple[int, str]] = read_column_headers(table, layout)
+    cand_headers = read_column_header_cands(table, layout)
+    headers: list[tuple[int, str]] = [(idx, _pick_consensus(c)) for idx, c in cand_headers]
     for name, hint in follow_targets:
-        col = find_column_for_player(headers, name, hint=hint)
+        col = find_column_for_player_cands(cand_headers, name, hint=hint)
         if col is not None:
             resolved[name] = col
 
@@ -553,10 +619,10 @@ def verify_follow_columns(
         if col is None or col < 0 or col >= len(cols):
             continue
         x0, x1 = cols[col]
-        got = _ocr_header_name(header[:, x0:x1])
-        if not got:
+        cands = _ocr_header_cands(header[:, x0:x1])
+        if not cands:
             continue
-        if find_column_for_player([(col, got)], name, hint=col) == col:
+        if find_column_for_player_cands([(col, cands)], name, hint=col) == col:
             resolved[name] = col
 
     elapsed = (time.perf_counter() - t0) * 1000
@@ -602,12 +668,13 @@ def parse_stats_table(
             for name, col in known_columns.items():
                 bets_by_column[col] = _parse_single_column(table, col, rows, layout)
         else:
-            headers = read_column_headers(table, layout)
+            cand_headers = read_column_header_cands(table, layout)
+            headers = [(idx, _pick_consensus(c)) for idx, c in cand_headers]
             players = [n for _, n in headers if n]
             bets_by_column = {}
             resolved = {}
             for name, hint in follow_targets:
-                col = find_column_for_player(headers, name, hint=hint)
+                col = find_column_for_player_cands(cand_headers, name, hint=hint)
                 if col is None:
                     continue
                 resolved[name] = col

@@ -285,17 +285,90 @@ def preprocess_name_cell(img: np.ndarray, scale: int = 3) -> np.ndarray:
     return th
 
 
-def ocr_name_cell(img: np.ndarray) -> tuple[str, float]:
-    """讀玩家暱稱：放大+Otsu，psm 7 單行 chi_tra。"""
+def _polarize(th: np.ndarray) -> np.ndarray:
+    """Tesseract 偏好黑字白底；若前景偏黑（暱稱黑字）維持，否則反白。"""
+    if float(th.mean()) < 127:
+        return cv2.bitwise_not(th)
+    return th
+
+
+def _name_variants(img: np.ndarray) -> list[np.ndarray]:
+    """產生多種前處理版本（不同放大倍率＋不同二值化）。
+
+    單一 Otsu 門檻很脆弱：欄位背景深淺稍有差異就可能把字整片切成全黑/全白 → OCR 讀空白。
+    多備幾種（含自適應門檻），任一種讀得到就不會整欄落空。
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    out: list[np.ndarray] = []
+    for scale in (3, 4, 5):
+        g = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        gb = cv2.GaussianBlur(g, (3, 3), 0)
+        _, otsu = cv2.threshold(gb, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        out.append(_polarize(otsu))
+        try:
+            adap = cv2.adaptiveThreshold(
+                gb, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10
+            )
+            out.append(_polarize(adap))
+        except cv2.error:
+            pass
+    return out
+
+
+def _clean_name_ocr(raw: str) -> str:
+    """去掉空白與常見雜訊符號，只留可比對的字。"""
+    s = "".join(raw.split())
+    for ch in "|;:.,，。、_-~`'\"[](){}（）【】<>《》":
+        s = s.replace(ch, "")
+    return s
+
+
+def ocr_name_candidates(img: np.ndarray) -> list[str]:
+    """讀玩家暱稱，回傳多種前處理得到的候選字串（去重、長度>=2）。
+
+    供比對時「目標 vs 所有候選取最佳」用：只要任一種前處理讀對（或接近），就比對得到，
+    大幅降低單一門檻切壞整欄落空的風險。
+    """
     if img.size == 0:
-        return "", 0.0
-    proc = preprocess_name_cell(img)
+        return []
     config = "--psm 7 -l chi_tra"
-    try:
-        raw = pytesseract.image_to_string(Image.fromarray(proc), config=config).strip()
-        return raw, 0.7 if raw else 0.0
-    except pytesseract.TesseractError:
-        return "", 0.0
+    cands: list[str] = []
+    for proc in _name_variants(img):
+        try:
+            raw = pytesseract.image_to_string(
+                Image.fromarray(proc), config=config
+            ).strip()
+        except pytesseract.TesseractError:
+            continue
+        cleaned = _clean_name_ocr(raw)
+        if len(cleaned) >= 2 and not cleaned.isdigit():
+            cands.append(cleaned)
+    seen: dict[str, int] = {}
+    for c in cands:
+        seen[c] = seen.get(c, 0) + 1
+    return list(seen.keys())
+
+
+def _consensus_name(cands: list[str]) -> str:
+    """從候選中挑「跟其他候選最相似」者（雜訊多為離群值，會被排除）。"""
+    if not cands:
+        return ""
+    if len(cands) == 1:
+        return cands[0]
+    import difflib as _dl
+
+    def score(c: str) -> tuple[float, int]:
+        sim = sum(_dl.SequenceMatcher(None, c, o).ratio() for o in cands if o is not c)
+        return sim, len(c)
+
+    return max(cands, key=score)
+
+
+def ocr_name_cell(img: np.ndarray) -> tuple[str, float]:
+    """讀玩家暱稱：多倍率＋多種二值化容錯，psm 7 單行 chi_tra，取共識結果。"""
+    cands = ocr_name_candidates(img)
+    name = _consensus_name(cands)
+    return name, 0.7 if name else 0.0
 
 
 def warmup_ocr() -> None:
