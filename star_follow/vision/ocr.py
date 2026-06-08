@@ -292,27 +292,27 @@ def _polarize(th: np.ndarray) -> np.ndarray:
     return th
 
 
-def _name_variants(img: np.ndarray) -> list[np.ndarray]:
-    """產生多種前處理版本（不同放大倍率＋不同二值化）。
-
-    單一 Otsu 門檻很脆弱：欄位背景深淺稍有差異就可能把字整片切成全黑/全白 → OCR 讀空白。
-    多備幾種（含自適應門檻），任一種讀得到就不會整欄落空。
-    """
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    out: list[np.ndarray] = []
-    for scale in (3, 4, 5):
-        g = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-        gb = cv2.GaussianBlur(g, (3, 3), 0)
-        _, otsu = cv2.threshold(gb, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        out.append(_polarize(otsu))
+def _variant_image(gray: np.ndarray, scale: int, mode: str) -> np.ndarray:
+    g = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    gb = cv2.GaussianBlur(g, (3, 3), 0)
+    if mode == "adaptive":
         try:
-            adap = cv2.adaptiveThreshold(
+            th = cv2.adaptiveThreshold(
                 gb, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10
             )
-            out.append(_polarize(adap))
         except cv2.error:
-            pass
-    return out
+            _, th = cv2.threshold(gb, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    else:
+        _, th = cv2.threshold(gb, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return _polarize(th)
+
+
+# 前處理嘗試順序：第一種（Otsu）便宜且最常成功；只有讀成空白時才追加第二種（自適應門檻，
+# 對背景深淺不均更穩，專治「Otsu 把字整片切掉變空白」的欄）。最多 2 次，控制每欄耗時。
+_NAME_VARIANTS = (
+    (3, "otsu"),
+    (3, "adaptive"),
+)
 
 
 def _clean_name_ocr(raw: str) -> str:
@@ -323,30 +323,48 @@ def _clean_name_ocr(raw: str) -> str:
     return s
 
 
-def ocr_name_candidates(img: np.ndarray) -> list[str]:
-    """讀玩家暱稱，回傳多種前處理得到的候選字串（去重、長度>=2）。
+def _has_ink(gray: np.ndarray) -> bool:
+    """這欄看起來是否「有字」（有明顯深於背景的筆畫）。
 
-    供比對時「目標 vs 所有候選取最佳」用：只要任一種前處理讀對（或接近），就比對得到，
-    大幅降低單一門檻切壞整欄落空的風險。
+    只用來決定「第一種讀空白時要不要再補跑第二種」，不會用來跳過第一次 OCR，
+    所以即使誤判也不會漏掉名字（最差等同舊版只跑一次）。
+    """
+    if gray.size == 0:
+        return False
+    m = float(gray.mean())
+    dark = int((gray < (m - 35)).sum())
+    return (dark / gray.size) >= 0.006
+
+
+def ocr_name_candidates(img: np.ndarray) -> list[str]:
+    """讀玩家暱稱，回傳候選字串清單（去重、長度>=2）。
+
+    速度優先：每欄一律先跑 1 種便宜前處理（Otsu）；只有「讀成空白」且「該欄看起來有字」
+    時，才補跑第二種（自適應門檻，專治 Otsu 把字整片切掉變空白）。供比對時「目標 vs
+    所有候選取最佳」用，只要任一種讀對或接近就配得到。
     """
     if img.size == 0:
         return []
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     config = "--psm 7 -l chi_tra"
     cands: list[str] = []
-    for proc in _name_variants(img):
+    seen: set[str] = set()
+    for i, (scale, mode) in enumerate(_NAME_VARIANTS):
+        if i > 0:
+            # 第一種已讀到 → 收工；或這欄看起來沒字 → 不浪費第二次
+            if cands or not _has_ink(gray):
+                break
         try:
             raw = pytesseract.image_to_string(
-                Image.fromarray(proc), config=config
+                Image.fromarray(_variant_image(gray, scale, mode)), config=config
             ).strip()
         except pytesseract.TesseractError:
-            continue
+            raw = ""
         cleaned = _clean_name_ocr(raw)
-        if len(cleaned) >= 2 and not cleaned.isdigit():
+        if len(cleaned) >= 2 and not cleaned.isdigit() and cleaned not in seen:
+            seen.add(cleaned)
             cands.append(cleaned)
-    seen: dict[str, int] = {}
-    for c in cands:
-        seen[c] = seen.get(c, 0) + 1
-    return list(seen.keys())
+    return cands
 
 
 def _consensus_name(cands: list[str]) -> str:
@@ -394,6 +412,17 @@ def ocr_chinese_line(img: np.ndarray, *, stats: bool = False) -> tuple[str, floa
         return raw, 0.7 if raw else 0.0
     except pytesseract.TesseractError:
         return "", 0.0
+
+
+@lru_cache(maxsize=1)
+def paddle_available() -> bool:
+    """是否真的能用 PaddleOCR（打包版未內含 paddle 時為 False，避免誤走退回路徑）。"""
+    try:
+        import paddleocr  # noqa: F401
+
+        return True
+    except Exception:
+        return False
 
 
 @lru_cache(maxsize=1)

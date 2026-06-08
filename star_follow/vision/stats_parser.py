@@ -16,6 +16,7 @@ from .ocr import (
     ocr_chinese_paddle,
     ocr_name_candidates,
     ocr_name_cell,
+    paddle_available,
 )
 from .roi import scale_rect
 from .stats_table_roi import find_stats_table_in_panel
@@ -342,7 +343,7 @@ def _ocr_header_cands(cell: np.ndarray) -> list[str]:
     回傳「多個候選」而非單一字串：比對時拿目標去比所有候選取最佳，只要任一種前處理讀對
     （或接近）就配得到，大幅降低單一門檻把整欄切壞而落空的風險。
     """
-    if _USE_PADDLE_HEADER:
+    if _USE_PADDLE_HEADER and paddle_available():
         try:
             name, _ = ocr_chinese_paddle(cell)
             name = _clean_name(name)
