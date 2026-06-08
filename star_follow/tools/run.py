@@ -14,10 +14,39 @@ from star_follow.paths import logs_dir as _logs_dir
 from star_follow.util.admin import is_admin, require_admin
 
 
+def _prune_old_logs(log_dir: Path, days: int = 7) -> int:
+    """刪掉 log_dir 內超過 days 天的舊 log 與診斷截圖，避免長期累積佔空間。
+
+    只清 *.log / *.png / *.jpg（log 與診斷圖），保留校正工具的 *_mark 資料夾。
+    回傳刪除的檔案數。任何錯誤都吞掉（清理失敗不影響主程式啟動）。
+    """
+    cutoff = time.time() - days * 86400
+    removed = 0
+    try:
+        for p in log_dir.rglob("*"):
+            try:
+                if not p.is_file():
+                    continue
+                if p.suffix.lower() not in (".log", ".png", ".jpg", ".jpeg"):
+                    continue
+                # 保留校正/標記工具的輸入資料夾（lobby_mark、*_mark 等）
+                if any(part.endswith("_mark") for part in p.parts):
+                    continue
+                if p.stat().st_mtime < cutoff:
+                    p.unlink(missing_ok=True)
+                    removed += 1
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+    return removed
+
+
 def _setup_logging() -> Path:
     """同時輸出到主控台與 logs/run_*.log，方便事後/跨視窗檢視。"""
     log_dir = _logs_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
+    removed = _prune_old_logs(log_dir, days=7)
     log_path = log_dir / f"run_{time.strftime('%Y%m%d_%H%M%S')}.log"
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     root = logging.getLogger()
@@ -27,6 +56,8 @@ def _setup_logging() -> Path:
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setFormatter(fmt)
     root.handlers = [sh, fh]
+    if removed:
+        logging.getLogger(__name__).info("已清理 %d 個 7 天前的舊 log／診斷圖", removed)
     return log_path
 
 

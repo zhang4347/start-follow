@@ -1,6 +1,6 @@
 {
-  "version": "1.2.18",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.18/StarFollow_1.2.18.zip",
-  "sha256": "a4ceb2c0d9de9b036657de92f4f9cfc8a69c465284ed82fd99780ffe4f2a4988",
-  "notes": "統計表改用校正後的固定欄/列座標：7 欄完整辨識（修正最右欄漏讀、追蹤對象在第7欄被誤判不在房內）、金額對齊正確列；餘額讀取區重新校正、不在牌桌時不讀餘額避免誤判"
+  "version": "1.2.19",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.19/StarFollow_1.2.19.zip",
+  "sha256": "c4534d215a050137eb35e34e322bb62221860ce1dcc50a6a4d0b5b0fd7a019c1",
+  "notes": "餘額辨識改用黃字遮罩+逐位辨識（濾掉逗號、不確定就重試不硬報），大幅減少讀錯；截圖暫時失敗（視窗最小化/螢幕休眠鎖定）改為乾淨暫停重試、畫面恢復自動接續，不再崩潰洗版；啟動自動清理7天前的舊log與診斷圖"
 }

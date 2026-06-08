@@ -105,35 +105,149 @@ def ocr_amount(img: np.ndarray) -> tuple[int, float]:
         return 0, 0.0
 
 
-def ocr_balance(img: np.ndarray) -> tuple[int, float]:
-    """讀左下角餘額（亮黃數字、深色底，格式像 183,256）。
+def _ocr_digit_string(th: np.ndarray) -> str:
+    """對「黑字白底」二值圖，用單行 psm 7（純數字白名單）讀整串數字。"""
+    config = "--psm 7 -c tessedit_char_whitelist=0123456789"
+    try:
+        raw = pytesseract.image_to_string(Image.fromarray(th), config=config)
+    except pytesseract.TesseractError:
+        return ""
+    return _DIGITS.sub("", raw)
 
-    回傳 (金額, 信心)。讀不到回 (0, 0.0)。
+
+def _normalize_glyph(sub: np.ndarray) -> np.ndarray | None:
+    """單一數字（白字黑底）正規化：緊裁字形 → 統一高度 64 → 加粗筆畫 → 留白 → 反白。
+
+    Tesseract 對小且細的字辨識不穩（7→1、5/8/9 混淆）。把每個字裁緊、放大到固定高度
+    再稍微加粗，單字元辨識可大幅變準（實測這步讓逐位辨識全對）。
     """
-    if img is None or img.size == 0:
-        return 0, 0.0
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-    # 亮字深底：取亮的像素為前景，再反白成「黑字白底」給 Tesseract
-    _, th = cv2.threshold(gray, 130, 255, cv2.THRESH_BINARY)
-    th = cv2.bitwise_not(th)
-    # 不再「取最長」（會偏向把逗號誤讀成數字而多一位）；改用單行 psm 7 為主，
-    # 只有 psm 7 讀不到時才退而用 psm 6。多一位/少一位的偶發誤差由上層多次取多數決處理。
-    best = ""
-    for psm in (7, 6):
-        config = f"--psm {psm} -c tessedit_char_whitelist=0123456789,"
+    ys, xs = np.where(sub > 0)
+    if len(xs) == 0:
+        return None
+    sub = sub[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    h = 64
+    w = max(1, int(round(sub.shape[1] * 64 / sub.shape[0])))
+    sub = cv2.resize(sub, (w, h), interpolation=cv2.INTER_CUBIC)
+    sub = cv2.dilate(sub, np.ones((3, 3), np.uint8), iterations=1)
+    sub = cv2.copyMakeBorder(sub, 16, 16, 16, 16, cv2.BORDER_CONSTANT, value=0)
+    return cv2.bitwise_not(sub)  # 白字黑底 → 黑字白底
+
+
+def _ocr_per_digit(clean: np.ndarray, boxes: list[tuple[int, int, int, int]]) -> str:
+    """把每個數字塊正規化後單獨送 psm 10（單字元）辨識，逐位組回字串。
+
+    clean：白字黑底的乾淨數字遮罩（已濾掉逗號）。boxes：由左到右的數字外框。
+    每塊正規化高度＋加粗，沒有版面/逗號干擾，對小字、5/8/9/7 混淆更穩。
+    """
+    config = "--psm 10 -c tessedit_char_whitelist=0123456789"
+    out = []
+    for (x, y, w, h) in boxes:
+        sub = clean[y:y + h, x:x + w]
+        th = _normalize_glyph(sub)
+        if th is None:
+            out.append("?")
+            continue
         try:
             raw = pytesseract.image_to_string(Image.fromarray(th), config=config)
         except pytesseract.TesseractError:
-            continue
-        digits = _DIGITS.sub("", raw)
-        if digits:
-            best = digits
-            break
+            raw = ""
+        d = _DIGITS.sub("", raw)
+        out.append(d[0] if d else "?")  # 單字元只取第一個數字；讀不到記 ?
+    return "".join(out)
+
+
+def _ocr_balance_gray(img: np.ndarray) -> tuple[int, float]:
+    """退路：黃色遮罩抓不到時，用舊的灰階二值法（含逗號白名單）。"""
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+    _, th = cv2.threshold(gray, 130, 255, cv2.THRESH_BINARY)
+    th = cv2.bitwise_not(th)
+    best = _ocr_digit_string(th)
     if not best:
         return 0, 0.0
     try:
-        return int(best), 0.85
+        return int(best), 0.6
+    except ValueError:
+        return 0, 0.0
+
+
+def ocr_balance(img: np.ndarray) -> tuple[int, float]:
+    """讀左下角餘額（亮黃數字、深色底，格式像 7,273,414）。
+
+    做法（針對固定字體遊戲 UI）：
+      1) 用黃色遮罩只抽出數字，背景全部清掉（比轉灰階乾淨非常多）。
+      2) 連通元件依「高度」濾掉逗號與雜訊 → 根本不讓逗號進辨識（解決多一位/少一位）。
+      3) 整串 psm 7 讀一次；若位數和逐位辨識對不上，採逐位 psm 10 的結果。
+    黃色抓不到時退回灰階法。回傳 (金額, 信心)。讀不到回 (0, 0.0)。
+    """
+    if img is None or img.size == 0:
+        return 0, 0.0
+    rgb = img if (img.ndim == 3 and img.shape[2] == 3) else cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    # 黃色：H≈15~45、S/V 偏高（涵蓋亮黃到偏橘黃）
+    mask = cv2.inRange(hsv, np.array([15, 60, 90], np.uint8), np.array([45, 255, 255], np.uint8))
+    if int(cv2.countNonZero(mask)) < 20:
+        return _ocr_balance_gray(img)
+
+    scale = 3
+    mask = cv2.resize(mask, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
+    # 補小縫，避免一個數字被切成兩塊
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    comps = []  # (x, y, w, h, label)
+    for i in range(1, n):
+        x = stats[i, cv2.CC_STAT_LEFT]
+        y = stats[i, cv2.CC_STAT_TOP]
+        w = stats[i, cv2.CC_STAT_WIDTH]
+        h = stats[i, cv2.CC_STAT_HEIGHT]
+        area = stats[i, cv2.CC_STAT_AREA]
+        if area < 8:
+            continue
+        comps.append((x, y, w, h, i))
+    if not comps:
+        return _ocr_balance_gray(img)
+
+    heights = sorted(c[3] for c in comps)
+    med_h = heights[len(heights) // 2]
+    # 數字高度接近中位數；逗號/小數點又矮又小（高度遠小於中位數）→ 丟掉
+    digits = [c for c in comps if c[3] >= 0.6 * med_h]
+    if not digits:
+        return _ocr_balance_gray(img)
+    digits.sort(key=lambda c: c[0])  # 由左到右
+
+    keep_labels = {c[4] for c in digits}
+    clean = np.where(np.isin(labels, list(keep_labels)), np.uint8(255), np.uint8(0))
+    th = cv2.bitwise_not(clean)
+    th = cv2.copyMakeBorder(th, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=255)
+
+    whole = _ocr_digit_string(th)
+    boxes = [(c[0], c[1], c[2], c[3]) for c in digits]
+    per = _ocr_per_digit(clean, boxes)  # 長度 == 塊數，讀不到的位置記 '?'
+    n_digits = len(digits)
+
+    # 逐位辨識（已正規化＋加粗）最可靠，且位數由切割保證；整串只當交叉驗證/補洞。
+    best = ""
+    conf = 0.0
+    if "?" not in per:
+        best = per
+        conf = 0.95 if (whole == per) else 0.9
+    elif whole and len(whole) == n_digits and whole.isdigit():
+        # 逐位有讀不到的洞，但整串位數對得上 → 用整串
+        best = whole
+        conf = 0.8
+    elif per.count("?") == 1 and whole and len(whole) == n_digits:
+        # 只有一個洞 → 用整串對應位置補洞
+        idx = per.index("?")
+        repaired = per[:idx] + whole[idx] + per[idx + 1:]
+        if repaired.isdigit():
+            best = repaired
+            conf = 0.75
+    if not best or not best.isdigit():
+        # 仍不可靠 → 回 0，交由上層多次取多數決重試（不要硬猜）
+        return _ocr_balance_gray(img) if not per.strip("?") else (0, 0.0)
+    try:
+        return int(best), conf
     except ValueError:
         return 0, 0.0
 

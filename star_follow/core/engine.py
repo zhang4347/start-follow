@@ -13,7 +13,7 @@ from PIL import Image
 from star_follow.automation.click import click_at, get_menu_click_backend, get_ui_click_backend, wheel_at_client
 from star_follow.automation.executor import BetExecutor
 from star_follow.automation.menu_flow import open_stats_with_marks, retry_stats_chart_click
-from star_follow.capture.screen import capture_client
+from star_follow.capture.screen import CaptureUnavailable, capture_client
 from star_follow.capture.window import find_game_window, focus_window
 from star_follow.config import AppConfig, load_config
 from star_follow.core.countdown_tracker import CountdownTracker
@@ -109,6 +109,7 @@ class FollowEngine:
         self._stay_pause_notified = False  # 已對「對象全離桌」發過 TG
         self._last_stay_pause_log_mono = 0.0
         self._stopped_reason: str | None = None
+        self._capture_unavail_since: float | None = None  # 畫面暫時抓不到的起始時點（None=正常）
         self._last_lobby_log_mono = 0.0
         self._stay_at_table_grace_until = 0.0
         self._last_idle_wait_log_mono = 0.0
@@ -1872,6 +1873,27 @@ class FollowEngine:
                     # 視窗不在，降速輪詢避免空轉
                     time.sleep(1.0)
                     continue
+                if self._capture_unavail_since is not None:
+                    # 截圖恢復正常：記一筆並重置回合狀態，重新同步畫面
+                    down = time.monotonic() - self._capture_unavail_since
+                    logger.info("畫面已恢復擷取（暫停約 %.0f 秒）", down)
+                    self._capture_unavail_since = None
+                    self.phase = Phase.IDLE
+                    self.ctx = RoundContext()
+                    self._cd_tracker.reset()
+            except CaptureUnavailable as exc:
+                # 螢幕暫時抓不到（視窗最小化/螢幕休眠或鎖定/遠端斷線）：放慢重試、
+                # 只在「開始」時記一筆，不狂噴 traceback，也不嘗試回桌（回桌也要截圖）。
+                if self._capture_unavail_since is None:
+                    self._capture_unavail_since = time.monotonic()
+                    logger.warning(
+                        "畫面暫時無法擷取（%s）：多半是遊戲視窗被最小化／螢幕休眠或鎖定。"
+                        "已暫停動作、每秒重試，待畫面恢復自動接續。",
+                        exc,
+                    )
+                self.phase = Phase.IDLE
+                time.sleep(1.0)
+                continue
             except Exception:
                 logger.exception("迴圈錯誤")
                 try:
@@ -1880,6 +1902,9 @@ class FollowEngine:
                             capture_client(self._win),
                             "例外後恢復",
                         )
+                except CaptureUnavailable:
+                    # 恢復時也抓不到畫面：當成暫時狀態，下一輪走上面的重試分支
+                    self._capture_unavail_since = self._capture_unavail_since or time.monotonic()
                 except Exception:
                     logger.exception("例外恢復失敗")
                 self.phase = Phase.IDLE
