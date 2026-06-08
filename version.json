@@ -1,6 +1,6 @@
 {
-  "version": "1.2.17",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.17/StarFollow_1.2.17.zip",
-  "sha256": "b890787ca5d5ab2ab28942625827ca6640d785a4f4fad27a024a55024c595304",
-  "notes": "掛房優化：對象全離桌改為只通知不停止（持續防踢守桌、對象回來自動續跟）；被踢回桌遇指定桌滿桌會持續嘗試切回指定桌、回不去不亂跑；餘額辨識多次取多數決降低誤判；統計表固定7欄修正最右欄漏讀；桌號清單補齊1~19"
+  "version": "1.2.18",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.18/StarFollow_1.2.18.zip",
+  "sha256": "a4ceb2c0d9de9b036657de92f4f9cfc8a69c465284ed82fd99780ffe4f2a4988",
+  "notes": "統計表改用校正後的固定欄/列座標：7 欄完整辨識（修正最右欄漏讀、追蹤對象在第7欄被誤判不在房內）、金額對齊正確列；餘額讀取區重新校正、不在牌桌時不讀餘額避免誤判"
 }

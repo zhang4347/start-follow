@@ -156,7 +156,7 @@ class SheetUploader:
             return False
         from star_follow.monitor.screen_gate import stable_balance
 
-        balance = stable_balance(lambda: read_balance_once(self.cfg))
+        balance = stable_balance(cfg=self.cfg)
         if balance <= 0:
             logger.info("餘額上傳：暫時讀不到餘額（視窗未開或 OCR 失敗），稍後重試")
             return False

@@ -11,6 +11,7 @@ from star_follow.config import AppConfig
 
 from . import ocr as ocr_mod
 from .ocr import ocr_amount, ocr_chinese_line, ocr_chinese_paddle, ocr_name_cell
+from .roi import scale_rect
 from .stats_table_roi import find_stats_table_in_panel
 
 
@@ -56,6 +57,18 @@ def _row_band(layout: dict, row_index: int) -> tuple[float, float]:
 
 
 def extract_stats_table(frame: np.ndarray, cfg: AppConfig) -> tuple[np.ndarray, list[int]]:
+    layout = cfg.raw.get("stats_layout", {})
+    h_frame, w_frame = frame.shape[:2]
+    # 手動固定表格範圍：關掉會把最右欄收窄的自動偵測，直接用標好的 stats_table（參考座標縮放）。
+    if layout.get("fixed_table") and cfg.roi.get("stats_table"):
+        rx, ry, rw, rh = scale_rect(
+            list(cfg.roi["stats_table"]),
+            cfg.window.reference_width,
+            cfg.window.reference_height,
+            w_frame,
+            h_frame,
+        )
+        return frame[ry : ry + rh, rx : rx + rw].copy(), [rx, ry, rw, rh]
     panel_rect = cfg.roi.get("stats_panel", [118, 86, 1043, 548])
     detected = find_stats_table_in_panel(frame, list(panel_rect))
     rect = detected or cfg.roi.get("stats_table", [110, 118, 805, 400])
@@ -169,8 +182,39 @@ def detect_column_bounds(
     return label_w, cols[:_MAX_PLAYER_COLS]
 
 
+def _manual_columns(
+    table_w: int, layout: dict
+) -> tuple[int, list[tuple[int, int]]] | None:
+    """手動標記的玩家欄範圍（player_band=[x0_frac, x1_frac]，相對表格寬度的比例）。
+
+    手動框住「所有玩家名字那一排」的左右範圍後，等分成 player_cols（預設 7）欄。
+    欄寬是等寬的，等分比會歪掉的自動格線偵測更穩，也不會把名字邊緣切掉。
+    """
+    band = layout.get("player_band")
+    if not (isinstance(band, (list, tuple)) and len(band) == 2):
+        return None
+    x0f, x1f = float(band[0]), float(band[1])
+    if not (0.0 <= x0f < x1f <= 1.0):
+        return None
+    x0 = int(round(x0f * table_w))
+    x1 = int(round(x1f * table_w))
+    n = _player_cols(layout)
+    col_w = (x1 - x0) / n
+    if col_w < 20:
+        return None
+    cols: list[tuple[int, int]] = []
+    for i in range(n):
+        a = int(round(x0 + i * col_w))
+        b = int(round(x0 + (i + 1) * col_w))
+        cols.append((a + 1, b - 1))
+    return x0, cols
+
+
 def _columns_for(table: "np.ndarray", layout: dict) -> tuple[int, list[tuple[int, int]]]:
     target = _player_cols(layout)
+    manual = _manual_columns(table.shape[1], layout)
+    if manual is not None:
+        return manual
     if layout.get("detect_grid", True):
         try:
             det = detect_column_bounds(table, layout)

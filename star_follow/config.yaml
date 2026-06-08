@@ -78,10 +78,8 @@ room:
   stay_targets: []
   stay_pause_when_targets_absent: true
   stay_absent_rounds_to_pause: 2
-  # 對象全離桌處置：keep=只通知不停、繼續防踢+被踢自動回桌、回來自動續跟（推薦）；
-  #               pause=暫停跟注不回桌；stop=停止程式。
-  stay_on_absent: keep
   stay_stop_when_targets_absent: true
+  stay_on_absent: keep
 betting:
   follow_exclude:
   - 莊
@@ -168,10 +166,10 @@ roi:
   - 1043
   - 548
   stats_table:
-  - 128
-  - 152
-  - 1010
-  - 318
+  - 65
+  - 104
+  - 1148
+  - 512
   stats_close:
   - 1115
   - 92
@@ -188,10 +186,10 @@ roi:
   - 141
   - 37
   balance:
-  - 14
-  - 681
-  - 132
-  - 32
+  - 0
+  - 678
+  - 122
+  - 30
   account_name:
   - 14
   - 655
@@ -200,14 +198,19 @@ roi:
 stats_layout:
   header_band:
   - 0.0
-  - 0.0
+  - 0.0137
   - 1.0
-  - 0.12
-  data_top: 0.155
-  data_bottom: 0.88
+  - 0.123
+  data_top: 0.1426
+  data_bottom: 0.8848
   visible_rows: 7
   label_col_frac: 0.11
-  detect_grid: true
+  detect_grid: false
+  fixed_table: true
+  player_band:
+  - 0.1132
+  - 0.9956
+  player_cols: 7
 stats_scroll_row: 閒龍寶
 stats_scroll:
   scroll_to_top_clicks: 2

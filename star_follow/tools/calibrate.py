@@ -33,6 +33,8 @@ RECT_KEYS = [
     "stats_panel",
     "stats_table",
     "stats_close",
+    "balance",
+    "account_name",
 ]
 POINT_GROUPS = [
     ("click_points", ["menu_button", "menu_chart"]),
