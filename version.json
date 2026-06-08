@@ -1,6 +1,6 @@
 {
-  "version": "1.2.22",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.22/StarFollow_1.2.22.zip",
-  "sha256": "85f8a44f98151c221c00bb4007d69dbfeb931cf81964f094bd4b6302a24d25a3",
-  "notes": "修正 v1.2.21 表頭 OCR 過慢(每欄多跑前處理導致開盤近30秒、統計表不關、卡住)。改為每欄只跑1次辨識，只有讀成空白且該欄看起來有字時才補跑第二種(自適應門檻)專治Otsu把字切掉變空白的欄；空白欄不浪費、時間拉回正常。暱稱辨識容錯與比對(目標比對該欄所有候選取最佳、依長度容許錯1字仍保精準守則)維持，解決部分機器有截到對象卻跟不到"
+  "version": "1.2.23",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.23/StarFollow_1.2.23.zip",
+  "sha256": "8798e8d83fdffc26d730fcd597c3e7c34e495bf6b784e12e5dbc4c699b367265",
+  "notes": "修正客戶端表頭白字欄(如col5徐庶水元素)被誤判empty：舊版_has_ink只數深色像素，白字深底欄在客戶端gamma略偏就不補跑自適應門檻→Otsu讀空白；改為深/淺筆畫都算有字，第一種讀空且有字必補跑，並恢復六欄時代preprocess_name_cell為第一路徑。切格不變仍固定7欄"
 }

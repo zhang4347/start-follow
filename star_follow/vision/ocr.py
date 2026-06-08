@@ -307,13 +307,6 @@ def _variant_image(gray: np.ndarray, scale: int, mode: str) -> np.ndarray:
     return _polarize(th)
 
 
-# 前處理嘗試順序：第一種（Otsu）便宜且最常成功；只有讀成空白時才追加第二種（自適應門檻，
-# 對背景深淺不均更穩，專治「Otsu 把字整片切掉變空白」的欄）。最多 2 次，控制每欄耗時。
-_NAME_VARIANTS = (
-    (3, "otsu"),
-    (3, "adaptive"),
-)
-
 
 def _clean_name_ocr(raw: str) -> str:
     """去掉空白與常見雜訊符號，只留可比對的字。"""
@@ -324,46 +317,63 @@ def _clean_name_ocr(raw: str) -> str:
 
 
 def _has_ink(gray: np.ndarray) -> bool:
-    """這欄看起來是否「有字」（有明顯深於背景的筆畫）。
-
-    只用來決定「第一種讀空白時要不要再補跑第二種」，不會用來跳過第一次 OCR，
-    所以即使誤判也不會漏掉名字（最差等同舊版只跑一次）。
-    """
+    """這欄看起來是否「有字」：統計表表頭是白/淺字深底，深字淺底也會出現，兩種都要算。"""
     if gray.size == 0:
         return False
     m = float(gray.mean())
     dark = int((gray < (m - 35)).sum())
-    return (dark / gray.size) >= 0.006
+    bright = int((gray > (m + 35)).sum())
+    ink = max(dark, bright)
+    return (ink / gray.size) >= 0.004
 
 
 def ocr_name_candidates(img: np.ndarray) -> list[str]:
     """讀玩家暱稱，回傳候選字串清單（去重、長度>=2）。
 
-    速度優先：每欄一律先跑 1 種便宜前處理（Otsu）；只有「讀成空白」且「該欄看起來有字」
-    時，才補跑第二種（自適應門檻，專治 Otsu 把字整片切掉變空白）。供比對時「目標 vs
-    所有候選取最佳」用，只要任一種讀對或接近就配得到。
+    優先沿用六欄時代的 preprocess_name_cell（客戶端實測最穩）；讀不到再試自適應門檻
+    （白字深底 Otsu 常切壞）。第一種空白時一律補跑第二種，不再用 _has_ink 擋掉
+    （白字欄 dark 比例極低，客戶端 gamma 一偏就不補跑 → col5-empty）。
     """
     if img.size == 0:
         return []
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     config = "--psm 7 -l chi_tra"
     cands: list[str] = []
     seen: set[str] = set()
-    for i, (scale, mode) in enumerate(_NAME_VARIANTS):
-        if i > 0:
-            # 第一種已讀到 → 收工；或這欄看起來沒字 → 不浪費第二次
-            if cands or not _has_ink(gray):
-                break
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+
+    def _try_proc(proc: np.ndarray) -> None:
         try:
             raw = pytesseract.image_to_string(
-                Image.fromarray(_variant_image(gray, scale, mode)), config=config
+                Image.fromarray(proc), config=config
             ).strip()
         except pytesseract.TesseractError:
-            raw = ""
+            return
         cleaned = _clean_name_ocr(raw)
         if len(cleaned) >= 2 and not cleaned.isdigit() and cleaned not in seen:
             seen.add(cleaned)
             cands.append(cleaned)
+
+    # 1) 舊版路徑（六欄時代沿用）
+    _try_proc(preprocess_name_cell(img, scale=3))
+    if cands:
+        return cands
+
+    # 真空白欄（深/淺筆畫都沒有）→ 不浪費第二次；有字但 Otsu 切壞 → 必補跑
+    if not _has_ink(gray):
+        return cands
+
+    # 2) 自適應門檻（白字深底、Otsu 切壞時）
+    _try_proc(_variant_image(gray, 3, "adaptive"))
+    if cands:
+        return cands
+
+    # 3) 七欄等分比六欄窄，再放大一級
+    if img.shape[1] > 0 and img.shape[1] < 155:
+        _try_proc(preprocess_name_cell(img, scale=4))
+        if cands:
+            return cands
+        _try_proc(_variant_image(gray, 4, "adaptive"))
+
     return cands
 
 
