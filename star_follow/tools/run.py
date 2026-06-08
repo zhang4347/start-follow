@@ -505,6 +505,8 @@ def _selftest() -> int:
     print(f"名單 follow_list.json: {paths.follow_list_path()}  存在={paths.follow_list_path().is_file()}")
     print(f"Tesseract 執行檔: {paths.tesseract_exe()}  存在={paths.tesseract_exe().is_file()}")
     print(f"語言檔資料夾 tessdata: {paths.tessdata_dir()}  存在={paths.tessdata_dir().is_dir()}")
+    exe, data = paths.ocr_runtime()
+    print(f"OCR 實際使用: tesseract={exe}  tessdata={data}")
     print(f"TESSDATA_PREFIX: {os.environ.get('TESSDATA_PREFIX')}")
 
     ok = True

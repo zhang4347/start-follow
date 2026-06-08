@@ -1,6 +1,6 @@
 {
-  "version": "1.2.24",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.24/StarFollow_1.2.24.zip",
-  "sha256": "34b154722ddc057322f8aef769ea23095c08025bb45280acc4a73dd3bddff7ce",
-  "notes": "新增表頭OCR逐步診斷：偵測不到對象時存 ocr_trace.txt/json(每欄Tesseract raw/cleaned/過濾原因/比對分數)；新增 --test-crop 可在客戶端對 colN-empty.png 離線重跑OCR查根因"
+  "version": "1.2.25",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.25/StarFollow_1.2.25.zip",
+  "sha256": "1c263c71030537667938f3d0e7cf272722d508c58a573e7a4290bab9f48f3940",
+  "notes": "OCR引擎統一：開發與客戶端改用同一套 star_follow/tesseract + tessdata（打包前從本機 Tesseract 同步，不再開發用系統版、客戶用舊打包版）；表頭白字深底加 wtext 前處理；保留 ocr_trace 與 --test-crop 診斷"
 }

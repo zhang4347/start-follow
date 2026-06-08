@@ -15,7 +15,8 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 PROJECT = Path(SPECPATH)
-TESS_SRC = Path(r"C:\Program Files\Tesseract-OCR")
+_PKG_TESS = PROJECT / "star_follow" / "tesseract"
+TESS_SRC = _PKG_TESS if (_PKG_TESS / "tesseract.exe").is_file() else Path(r"C:\Program Files\Tesseract-OCR")
 
 # --- 一起打包的資料檔（verbatim 複製，不做相依分析） ---
 datas = []

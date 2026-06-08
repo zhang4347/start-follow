@@ -10,6 +10,8 @@ build/
 dist/
 release/
 *.spec.bak
+# build_release.ps1 從本機 Tesseract 同步到 star_follow/tesseract，不進 git
+star_follow/tesseract/
 
 # ===== Python 虛擬環境與快取 =====
 .venv/

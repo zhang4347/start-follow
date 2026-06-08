@@ -21,6 +21,18 @@ Remove-Item .\build -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item .\dist -Recurse -Force -ErrorAction SilentlyContinue
 Get-ChildItem -Path .\star_follow -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
+Write-Host "[0.5/5] 同步 Tesseract（開發=客戶端同一套 OCR 引擎）..." -ForegroundColor Cyan
+$sysTess = "C:\Program Files\Tesseract-OCR"
+$pkgTess = ".\star_follow\tesseract"
+if (-not (Test-Path "$sysTess\tesseract.exe")) {
+  Write-Host "打包中止：本機未安裝 Tesseract-OCR（$sysTess）" -ForegroundColor Red
+  exit 1
+}
+New-Item -ItemType Directory -Force -Path $pkgTess | Out-Null
+Copy-Item "$sysTess\tesseract.exe" $pkgTess -Force
+Copy-Item "$sysTess\*.dll" $pkgTess -Force
+Write-Host "  已同步 -> star_follow\tesseract（打包與開發共用）"
+
 Write-Host "[1/5] PyInstaller 打包中..." -ForegroundColor Cyan
 $buildStart = Get-Date
 & $py -m PyInstaller --noconfirm --clean star_follow.spec 2>&1 | Out-Null

@@ -11,37 +11,11 @@ import pytesseract
 from PIL import Image
 
 from star_follow import paths as _paths
-from star_follow.paths import tessdata_dir as _bundled_tessdata
-from star_follow.paths import tesseract_exe as _resolve_tess_exe
 
 _PKG = Path(__file__).resolve().parents[1]
-_TESS_EXE = _resolve_tess_exe()
-_ASCII_TESS_PREFIX = Path(os.environ.get("TESSDATA_PREFIX_ASCII", r"C:\star_follow_ocr"))
-_BUNDLED_TESSDATA = _bundled_tessdata()  # 打包內建的 tessdata（chi_tra/eng）
-_TESSDATA = _PKG / "tessdata"
-
-
-def _tess_prefix(base: Path) -> Path:
-    inner = base / "tessdata"
-    return inner if inner.is_dir() else base
-
-
-def _has_data(d: Path) -> bool:
-    return d.is_dir() and any(d.glob("*.traineddata"))
-
-
-# 打包模式：把 OCR 搬到 ASCII 路徑（避開中文/空白路徑讓 tesseract 讀不到語言檔）
-_staged = _paths.staged_ocr()
-if _staged is not None:
-    _TESS_EXE, _staged_prefix = _staged
-    os.environ["TESSDATA_PREFIX"] = str(_staged_prefix)
-elif _has_data(_BUNDLED_TESSDATA):
-    os.environ["TESSDATA_PREFIX"] = str(_BUNDLED_TESSDATA)
-elif (_ASCII_TESS_PREFIX / "tessdata").is_dir():
-    os.environ["TESSDATA_PREFIX"] = str(_tess_prefix(_ASCII_TESS_PREFIX))
-elif _has_data(_TESSDATA):
-    os.environ["TESSDATA_PREFIX"] = str(_tess_prefix(_PKG))
-
+_TESS_EXE, _TESSDATA = _paths.ocr_runtime()
+if _TESSDATA.is_dir():
+    os.environ["TESSDATA_PREFIX"] = str(_TESSDATA)
 if _TESS_EXE.is_file():
     pytesseract.pytesseract.tesseract_cmd = str(_TESS_EXE)
 
@@ -279,10 +253,22 @@ def preprocess_name_cell(img: np.ndarray, scale: int = 3) -> np.ndarray:
         gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     gray = cv2.GaussianBlur(gray, (3, 3), 0)
     _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    # Tesseract 偏好黑字白底；暱稱是黑字，若前景偏黑則維持，否則反白
     if float(th.mean()) < 127:
         th = cv2.bitwise_not(th)
     return th
+
+
+def preprocess_name_cell_wtext(img: np.ndarray, scale: int = 3) -> np.ndarray:
+    """統計表表頭：白/淺字 + 深褐底（Otsu 常切壞，需抓亮筆畫）。"""
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    if scale > 1:
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    m = float(gray.mean())
+    thr = int(min(max(m + 20, 110), 155))
+    _, bright = cv2.threshold(gray, thr, 255, cv2.THRESH_BINARY)
+    k = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+    bright = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, k, iterations=1)
+    return cv2.bitwise_not(bright)
 
 
 def _polarize(th: np.ndarray) -> np.ndarray:
@@ -374,13 +360,12 @@ def ocr_name_trace(img: np.ndarray) -> dict:
     if img.size == 0:
         trace["ink"] = _ink_stats(np.array([]))
         return trace
-    config = "--psm 7 -l chi_tra"
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     trace["ink"] = _ink_stats(gray)
     seen: set[str] = set()
 
-    def _run(step: str, proc: np.ndarray) -> bool:
-        ent = _try_name_ocr(proc, step=step, config=config)
+    def _run(step: str, proc: np.ndarray, psm: int = 7) -> bool:
+        ent = _try_name_ocr(proc, step=step, config=f"--psm {psm} -l chi_tra")
         trace["steps"].append(ent)
         if ent["accepted"] and ent["cleaned"] not in seen:
             seen.add(ent["cleaned"])
@@ -392,10 +377,17 @@ def ocr_name_trace(img: np.ndarray) -> dict:
         return trace
     if not trace["ink"]["has_ink"]:
         return trace
+    # 白字表頭：打包版 Tesseract 對 Otsu 常讀空，專用前處理
+    if _run("wtext_s3", preprocess_name_cell_wtext(img, scale=3)):
+        return trace
+    if _run("wtext_s3_psm6", preprocess_name_cell_wtext(img, scale=3), psm=6):
+        return trace
     if _run("adapt_s3", _variant_image(gray, 3, "adaptive")):
         return trace
     if img.shape[1] > 0 and img.shape[1] < 155:
         if _run("legacy_s4", preprocess_name_cell(img, scale=4)):
+            return trace
+        if _run("wtext_s4", preprocess_name_cell_wtext(img, scale=4)):
             return trace
         _run("adapt_s4", _variant_image(gray, 4, "adaptive"))
     return trace

@@ -70,8 +70,36 @@ def balance_state_path() -> Path:
 
 
 def tessdata_dir() -> Path:
-    """打包內建的 tessdata（chi_tra/eng）。"""
-    return resource_dir() / "tessdata"
+    """內建 tessdata（chi_tra/eng）。開發與打包優先用 star_follow/tessdata。"""
+    for base in (_PKG_DIR, resource_dir()):
+        p = base / "tessdata"
+        if p.is_dir() and any(p.glob("*.traineddata")):
+            return p
+    return _PKG_DIR / "tessdata"
+
+
+def tesseract_exe() -> Path:
+    """Tesseract 執行檔。
+
+    開發與客戶端必須同一套：優先 star_follow/tesseract（build 前從本機
+    C:\\Program Files\\Tesseract-OCR 同步）。只有缺檔時才退回系統安裝路徑。
+    """
+    for base in (_PKG_DIR, resource_dir()):
+        p = base / "tesseract" / "tesseract.exe"
+        if p.is_file():
+            return p
+    env = os.environ.get("TESSERACT_CMD")
+    if env and Path(env).is_file():
+        return Path(env)
+    return Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+
+
+def ocr_runtime() -> tuple[Path, Path]:
+    """回傳 (tesseract_exe, tessdata_dir)。打包模式會走 staged_ocr（ASCII 路徑）。"""
+    staged = staged_ocr()
+    if staged is not None:
+        return staged
+    return tesseract_exe(), tessdata_dir()
 
 
 def templates_dir() -> Path:
@@ -86,14 +114,6 @@ def templates_dir() -> Path:
         if p.is_dir():
             return p
     return _PKG_DIR / "vision" / "templates"
-
-
-def tesseract_exe() -> Path:
-    """tesseract 執行檔：優先用打包內建，其次環境變數，最後預設安裝路徑。"""
-    bundled = resource_dir() / "tesseract" / "tesseract.exe"
-    if bundled.is_file():
-        return bundled
-    return Path(os.environ.get("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe"))
 
 
 def _is_ascii(p: Path) -> bool:
