@@ -299,7 +299,8 @@ def _clean_name_ocr(raw: str) -> str:
     s = "".join(raw.split())
     for ch in "|;:.,，。、_-~`'\"[](){}（）【】<>《》":
         s = s.replace(ch, "")
-    return s
+    # Tesseract 常多讀出 ˉˍ 等假字；只留中英數與 CJK
+    return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", s)
 
 
 def _has_ink(gray: np.ndarray) -> bool:
@@ -364,31 +365,23 @@ def ocr_name_trace(img: np.ndarray) -> dict:
     trace["ink"] = _ink_stats(gray)
     seen: set[str] = set()
 
-    def _run(step: str, proc: np.ndarray, psm: int = 7) -> bool:
+    def _run(step: str, proc: np.ndarray, psm: int = 7) -> None:
         ent = _try_name_ocr(proc, step=step, config=f"--psm {psm} -l chi_tra")
         trace["steps"].append(ent)
         if ent["accepted"] and ent["cleaned"] not in seen:
             seen.add(ent["cleaned"])
             trace["candidates"].append(ent["cleaned"])
-            return True
-        return False
 
-    if _run("legacy_s3", preprocess_name_cell(img, scale=3)):
-        return trace
+    _run("legacy_s3", preprocess_name_cell(img, scale=3))
     if not trace["ink"]["has_ink"]:
         return trace
-    # 白字表頭：打包版 Tesseract 對 Otsu 常讀空，專用前處理
-    if _run("wtext_s3", preprocess_name_cell_wtext(img, scale=3)):
-        return trace
-    if _run("wtext_s3_psm6", preprocess_name_cell_wtext(img, scale=3), psm=6):
-        return trace
-    if _run("adapt_s3", _variant_image(gray, 3, "adaptive")):
-        return trace
+    # 白字表頭：打包版 Tesseract 對 Otsu 常讀空，專用前處理；跑完全部步驟再取最佳候選
+    _run("wtext_s3", preprocess_name_cell_wtext(img, scale=3))
+    _run("wtext_s3_psm6", preprocess_name_cell_wtext(img, scale=3), psm=6)
+    _run("adapt_s3", _variant_image(gray, 3, "adaptive"))
     if img.shape[1] > 0 and img.shape[1] < 155:
-        if _run("legacy_s4", preprocess_name_cell(img, scale=4)):
-            return trace
-        if _run("wtext_s4", preprocess_name_cell_wtext(img, scale=4)):
-            return trace
+        _run("legacy_s4", preprocess_name_cell(img, scale=4))
+        _run("wtext_s4", preprocess_name_cell_wtext(img, scale=4))
         _run("adapt_s4", _variant_image(gray, 4, "adaptive"))
     return trace
 

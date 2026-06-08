@@ -1,6 +1,6 @@
 {
-  "version": "1.2.25",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.25/StarFollow_1.2.25.zip",
-  "sha256": "1c263c71030537667938f3d0e7cf272722d508c58a573e7a4290bab9f48f3940",
-  "notes": "OCR引擎統一：開發與客戶端改用同一套 star_follow/tesseract + tessdata（打包前從本機 Tesseract 同步，不再開發用系統版、客戶用舊打包版）；表頭白字深底加 wtext 前處理；保留 ocr_trace 與 --test-crop 診斷"
+  "version": "1.2.26",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.26/StarFollow_1.2.26.zip",
+  "sha256": "cbb41354c5a5faa206456c385ad398ea1252e7a9d55b7c17fab73f30ef7760c6",
+  "notes": "表頭 OCR 加強：跑完全部前處理步驟再取候選（不再 early-return）、過濾 Tesseract 假字；4 字以上暱稱 fuzzy 門檻調為 0.7（3 字以下仍 0.95）；極難辨識名（如貳刀流聾）仍可能無法追蹤"
 }

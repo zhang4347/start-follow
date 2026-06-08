@@ -102,7 +102,9 @@ Write-Host "發佈更新（GitHub）："
 Write-Host "  1) 在 GitHub 開一個 Release（tag 用 v$ver），把 $zipName 當附件上傳。"
 Write-Host "  2) 把 release\version.json 的內容覆蓋到 repo 根目錄的 version.json"
 Write-Host "     （url 已是 zhang4347/start-follow，確認 sha256 是這支 zip 的）。"
-Write-Host "  3) git add version.json; git commit -m \"release v$ver\"; git push"
+Write-Host '  3) git add version.json; git commit -m "release v' -NoNewline
+Write-Host "$ver" -NoNewline
+Write-Host '"; git push'
 Write-Host "     客戶 config.yaml 的 manifest_url 指向（repo 必須是 Public）："
 Write-Host "     https://raw.githubusercontent.com/zhang4347/start-follow/main/version.json"
 

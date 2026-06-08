@@ -465,18 +465,14 @@ def read_column_headers(table: np.ndarray, layout: dict) -> list[tuple[int, str]
 
 # 跟注是真金白銀，比對要「精準優先」：寧可錯過也不要跟錯路人。
 _NAME_MATCH_MARGIN = 0.08  # 最佳與第二名差距需大於此值，否則視為無法分辨→不跟
+_NAME_MATCH_CUTOFF = 0.7  # 4 字以上暱稱 fuzzy 下限（約容許 1 字 OCR 誤差）
 
 
 def _name_cutoff(target: str) -> float:
-    """依名字長度算「容許剛好錯 1 個字」的相似度門檻。
-
-    SequenceMatcher 對長度 L、差 1 字的字串相似度 = (L-1)/L。短名（<=3 字）要求幾乎
-    完全相同，避免「錯 1 字 = 相似度太低」反而把路人也放進來。
-    """
-    L = len(target)
-    if L <= 3:
+    """依名字長度算 fuzzy 相似度門檻。短名（<=3 字）要求幾乎完全相同。"""
+    if len(target) <= 3:
         return 0.95
-    return (L - 1) / L - 0.02
+    return _NAME_MATCH_CUTOFF
 
 
 def _norm_name(s: str) -> str:
@@ -615,7 +611,7 @@ def match_player_name(players: list[str], target: str) -> str | None:
         reverse=True,
     )
     best_r, best_p = scored[0]
-    if best_r < _NAME_MATCH_CUTOFF:
+    if best_r < _name_cutoff(target_n):
         return None
     if len(scored) > 1 and scored[1][0] >= best_r - _NAME_MATCH_MARGIN:
         return None
