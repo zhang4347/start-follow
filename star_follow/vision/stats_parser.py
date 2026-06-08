@@ -16,6 +16,7 @@ from .ocr import (
     ocr_chinese_paddle,
     ocr_name_candidates,
     ocr_name_cell,
+    ocr_name_trace,
     paddle_available,
 )
 from .roi import scale_rect
@@ -50,35 +51,84 @@ def _save_stats_debug(
     cols: list[tuple[int, int]],
     names: list[str],
     targets: list[str],
+    col_traces: list[dict] | None = None,
 ) -> None:
-    """存統計表診斷圖：整張表 + 表頭那排，檔名帶讀到的名字，供事後對照欄位是否切歪／
-    名字是否被切掉。只在偵測不到對象時呼叫，並自動只留最近數十組。"""
+    """存統計表診斷：整表 + 逐欄裁切 + OCR 逐步追蹤 txt（查客端為何 colN-empty 但圖上有字）。"""
     if not _STATS_DEBUG:
         return
     try:
+        import json
+        import os
         from PIL import Image
 
+        from star_follow import paths
         from star_follow.paths import logs_dir
+        from star_follow.version import __version__
 
         d = logs_dir() / "stats_debug"
         d.mkdir(parents=True, exist_ok=True)
-        files = sorted(d.glob("*.png"), key=lambda p: p.stat().st_mtime)
-        for p in files[: max(0, len(files) - 60)]:
-            p.unlink(missing_ok=True)
+        for pat in ("*.png", "*_ocr_trace.txt", "*_ocr_trace.json"):
+            files = sorted(d.glob(pat), key=lambda p: p.stat().st_mtime)
+            for p in files[: max(0, len(files) - 60)]:
+                p.unlink(missing_ok=True)
         ts = time.strftime("%Y%m%d_%H%M%S")
         seen = "_".join(n for n in names if n)[:40] or "none"
         Image.fromarray(np.asarray(table)).save(str(d / f"{ts}_table_seen-{seen}.png"))
-        # 逐欄表頭裁切（看每一欄到底框到什麼、名字有沒有被切掉）
+        trace_lines = [
+            f"StarFollow v{__version__}  stats OCR trace  {ts}",
+            f"tesseract={os.environ.get('TESSDATA_PREFIX', '')}",
+            f"frozen={paths.is_frozen()}  app_dir={paths.app_dir()}",
+            f"targets={targets}",
+            "",
+        ]
         for idx, (x0, x1) in enumerate(cols):
             cell = header[:, x0:x1]
+            nm = names[idx] if idx < len(names) else ""
             if getattr(cell, "size", 0):
-                nm = names[idx] if idx < len(names) else ""
                 Image.fromarray(np.asarray(cell)).save(
                     str(d / f"{ts}_col{idx}-{nm or 'empty'}.png")
                 )
-        _sp_logger.info(
-            "統計表診斷已存 logs\\stats_debug：欄數=%d 讀到名字=%s 目標=%s",
-            len(cols), [n for n in names if n], targets,
+            tr = col_traces[idx] if col_traces and idx < len(col_traces) else None
+            trace_lines.append(f"=== col{idx} consensus={nm!r} crop=({x0},{x1}) ===")
+            if tr:
+                trace_lines.append(f"  ink: {tr.get('ink')}")
+                for st in tr.get("steps", []):
+                    trace_lines.append(
+                        f"  [{st.get('step')}] raw={st.get('raw')!r} "
+                        f"cleaned={st.get('cleaned')!r} "
+                        f"accepted={st.get('accepted')} reason={st.get('reason')}"
+                    )
+                trace_lines.append(f"  candidates={tr.get('candidates')}")
+                for tgt in targets:
+                    col = find_column_for_player_cands([(idx, tr.get("candidates") or [])], tgt)
+                    best_r = 0.0
+                    for c in tr.get("candidates") or []:
+                        n = _norm_name(c)
+                        if not n:
+                            continue
+                        r = 1.0 if n == _norm_name(tgt) else difflib.SequenceMatcher(
+                            None, _norm_name(tgt), n
+                        ).ratio()
+                        best_r = max(best_r, r)
+                    trace_lines.append(
+                        f"  match {tgt!r}: best_ratio={best_r:.3f} "
+                        f"cutoff={_name_cutoff(_norm_name(tgt)):.3f} -> col={col}"
+                    )
+            trace_lines.append("")
+        txt_path = d / f"{ts}_ocr_trace.txt"
+        txt_path.write_text("\n".join(trace_lines), encoding="utf-8")
+        if col_traces:
+            (d / f"{ts}_ocr_trace.json").write_text(
+                json.dumps(col_traces, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        _sp_logger.warning(
+            "統計表診斷 logs\\stats_debug：%s  讀到=%s  目標=%s  "
+            "（詳見 %s）",
+            ts,
+            [n for n in names if n],
+            targets,
+            txt_path.name,
         )
     except Exception as exc:  # noqa: BLE001
         _sp_logger.debug("存統計表診斷圖失敗：%s", exc)
@@ -384,10 +434,25 @@ def _header_cells(table: np.ndarray, layout: dict) -> list[tuple[int, np.ndarray
 
 
 def read_column_header_cands(
-    table: np.ndarray, layout: dict
+    table: np.ndarray,
+    layout: dict,
+    *,
+    traces_out: list[dict] | None = None,
 ) -> list[tuple[int, list[str]]]:
-    """讀各欄表頭暱稱「候選清單」，回傳 (欄位索引, [候選名...])。"""
-    return [(idx, _ocr_header_cands(cell)) for idx, cell in _header_cells(table, layout)]
+    """讀各欄表頭暱稱「候選清單」，回傳 (欄位索引, [候選名...])。
+
+    traces_out：若提供 list，會填入每欄 ocr_name_trace（與 OCR 同一次，供診斷存檔）。
+    """
+    out: list[tuple[int, list[str]]] = []
+    for idx, cell in _header_cells(table, layout):
+        if traces_out is not None:
+            tr = ocr_name_trace(cell)
+            traces_out.append(tr)
+            cands = [_clean_name(c) for c in tr["candidates"] if _clean_name(c)]
+        else:
+            cands = [_clean_name(c) for c in _ocr_header_cands(cell) if _clean_name(c)]
+        out.append((idx, cands))
+    return out
 
 
 def read_column_headers(table: np.ndarray, layout: dict) -> list[tuple[int, str]]:
@@ -669,7 +734,10 @@ def parse_stats_table(
             for name, col in known_columns.items():
                 bets_by_column[col] = _parse_single_column(table, col, rows, layout)
         else:
-            cand_headers = read_column_header_cands(table, layout)
+            col_traces: list[dict] = []
+            cand_headers = read_column_header_cands(
+                table, layout, traces_out=col_traces
+            )
             headers = [(idx, _pick_consensus(c)) for idx, c in cand_headers]
             players = [n for _, n in headers if n]
             bets_by_column = {}
@@ -681,7 +749,6 @@ def parse_stats_table(
                 resolved[name] = col
                 bets_by_column[col] = _parse_single_column(table, col, rows, layout)
             if not resolved and follow_targets:
-                # 偵測不到任何對象：存診斷圖（整張表＋逐欄表頭裁切）供校正欄位/名字切位
                 band = layout.get("header_band", [0.0, 0.0, 1.0, 0.12])
                 if isinstance(band, list) and len(band) == 4:
                     hdr = _crop_rel(table, band[0], band[1], band[2], band[3])
@@ -689,9 +756,12 @@ def parse_stats_table(
                     hdr = table[: max(20, int(table.shape[0] * 0.12)), :]
                 _, dcols = _columns_for(table, layout)
                 _save_stats_debug(
-                    table, hdr, dcols,
+                    table,
+                    hdr,
+                    dcols,
                     [n for _, n in headers],
                     [n for n, _ in follow_targets],
+                    col_traces=col_traces,
                 )
         elapsed = (time.perf_counter() - t0) * 1000
         return StatsParseResult(

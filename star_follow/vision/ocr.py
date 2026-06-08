@@ -327,54 +327,83 @@ def _has_ink(gray: np.ndarray) -> bool:
     return (ink / gray.size) >= 0.004
 
 
-def ocr_name_candidates(img: np.ndarray) -> list[str]:
-    """讀玩家暱稱，回傳候選字串清單（去重、長度>=2）。
+def _try_name_ocr(proc: np.ndarray, *, step: str, config: str) -> dict:
+    """跑一次表頭 OCR，回傳 raw/cleaned/是否採用/原因（供診斷）。"""
+    entry: dict = {"step": step, "raw": "", "cleaned": "", "accepted": False, "reason": ""}
+    try:
+        entry["raw"] = pytesseract.image_to_string(
+            Image.fromarray(proc), config=config
+        ).strip()
+    except pytesseract.TesseractError as exc:
+        entry["reason"] = f"tesseract_error:{exc}"
+        return entry
+    cleaned = _clean_name_ocr(entry["raw"])
+    entry["cleaned"] = cleaned
+    if len(cleaned) < 2:
+        entry["reason"] = "too_short_or_empty"
+    elif cleaned.isdigit():
+        entry["reason"] = "digits_only"
+    else:
+        entry["accepted"] = True
+        entry["reason"] = "ok"
+    return entry
 
-    優先沿用六欄時代的 preprocess_name_cell（客戶端實測最穩）；讀不到再試自適應門檻
-    （白字深底 Otsu 常切壞）。第一種空白時一律補跑第二種，不再用 _has_ink 擋掉
-    （白字欄 dark 比例極低，客戶端 gamma 一偏就不補跑 → col5-empty）。
-    """
+
+def _ink_stats(gray: np.ndarray) -> dict:
+    if gray.size == 0:
+        return {"mean": 0.0, "dark_pct": 0.0, "bright_pct": 0.0, "has_ink": False}
+    m = float(gray.mean())
+    dark = int((gray < (m - 35)).sum()) / gray.size
+    bright = int((gray > (m + 35)).sum()) / gray.size
+    return {
+        "mean": round(m, 1),
+        "dark_pct": round(dark, 5),
+        "bright_pct": round(bright, 5),
+        "has_ink": max(dark, bright) >= 0.004,
+    }
+
+
+def ocr_name_trace(img: np.ndarray) -> dict:
+    """表頭暱稱 OCR 完整追蹤：每步 raw 輸出、過濾原因、最終候選（供客戶端離線診斷）。"""
+    trace: dict = {
+        "shape": list(img.shape) if img.size else [],
+        "ink": {},
+        "steps": [],
+        "candidates": [],
+    }
     if img.size == 0:
-        return []
+        trace["ink"] = _ink_stats(np.array([]))
+        return trace
     config = "--psm 7 -l chi_tra"
-    cands: list[str] = []
-    seen: set[str] = set()
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    trace["ink"] = _ink_stats(gray)
+    seen: set[str] = set()
 
-    def _try_proc(proc: np.ndarray) -> None:
-        try:
-            raw = pytesseract.image_to_string(
-                Image.fromarray(proc), config=config
-            ).strip()
-        except pytesseract.TesseractError:
-            return
-        cleaned = _clean_name_ocr(raw)
-        if len(cleaned) >= 2 and not cleaned.isdigit() and cleaned not in seen:
-            seen.add(cleaned)
-            cands.append(cleaned)
+    def _run(step: str, proc: np.ndarray) -> bool:
+        ent = _try_name_ocr(proc, step=step, config=config)
+        trace["steps"].append(ent)
+        if ent["accepted"] and ent["cleaned"] not in seen:
+            seen.add(ent["cleaned"])
+            trace["candidates"].append(ent["cleaned"])
+            return True
+        return False
 
-    # 1) 舊版路徑（六欄時代沿用）
-    _try_proc(preprocess_name_cell(img, scale=3))
-    if cands:
-        return cands
-
-    # 真空白欄（深/淺筆畫都沒有）→ 不浪費第二次；有字但 Otsu 切壞 → 必補跑
-    if not _has_ink(gray):
-        return cands
-
-    # 2) 自適應門檻（白字深底、Otsu 切壞時）
-    _try_proc(_variant_image(gray, 3, "adaptive"))
-    if cands:
-        return cands
-
-    # 3) 七欄等分比六欄窄，再放大一級
+    if _run("legacy_s3", preprocess_name_cell(img, scale=3)):
+        return trace
+    if not trace["ink"]["has_ink"]:
+        return trace
+    if _run("adapt_s3", _variant_image(gray, 3, "adaptive")):
+        return trace
     if img.shape[1] > 0 and img.shape[1] < 155:
-        _try_proc(preprocess_name_cell(img, scale=4))
-        if cands:
-            return cands
-        _try_proc(_variant_image(gray, 4, "adaptive"))
+        if _run("legacy_s4", preprocess_name_cell(img, scale=4)):
+            return trace
+        _run("adapt_s4", _variant_image(gray, 4, "adaptive"))
+    return trace
 
-    return cands
+
+def ocr_name_candidates(img: np.ndarray) -> list[str]:
+    """讀玩家暱稱，回傳候選字串清單（去重、長度>=2）。"""
+    return list(ocr_name_trace(img)["candidates"])
 
 
 def _consensus_name(cands: list[str]) -> str:

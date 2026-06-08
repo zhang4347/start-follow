@@ -1,6 +1,6 @@
 {
-  "version": "1.2.23",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.23/StarFollow_1.2.23.zip",
-  "sha256": "8798e8d83fdffc26d730fcd597c3e7c34e495bf6b784e12e5dbc4c699b367265",
-  "notes": "修正客戶端表頭白字欄(如col5徐庶水元素)被誤判empty：舊版_has_ink只數深色像素，白字深底欄在客戶端gamma略偏就不補跑自適應門檻→Otsu讀空白；改為深/淺筆畫都算有字，第一種讀空且有字必補跑，並恢復六欄時代preprocess_name_cell為第一路徑。切格不變仍固定7欄"
+  "version": "1.2.24",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.24/StarFollow_1.2.24.zip",
+  "sha256": "34b154722ddc057322f8aef769ea23095c08025bb45280acc4a73dd3bddff7ce",
+  "notes": "新增表頭OCR逐步診斷：偵測不到對象時存 ocr_trace.txt/json(每欄Tesseract raw/cleaned/過濾原因/比對分數)；新增 --test-crop 可在客戶端對 colN-empty.png 離線重跑OCR查根因"
 }

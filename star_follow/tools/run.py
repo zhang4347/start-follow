@@ -450,6 +450,47 @@ def _list_windows() -> int:
     return 1
 
 
+def _test_crop(image_path: str, target: str | None = None) -> int:
+    """離線重跑單欄表頭裁切 OCR（用客戶端 stats_debug 的 colN-empty.png 查根因）。"""
+    import os
+
+    import numpy as np
+    import pytesseract
+    from PIL import Image
+
+    from star_follow import paths
+    from star_follow.vision import stats_parser as sp
+    from star_follow.vision.ocr import ocr_name_trace
+
+    p = Path(image_path)
+    if not p.is_file():
+        print(f"找不到檔案：{p}")
+        return 1
+    img = np.array(Image.open(p).convert("RGB"))
+    print("=== StarFollow 表頭裁切 OCR 診斷 ===")
+    print(f"檔案：{p}")
+    print(f"shape：{img.shape}")
+    print(f"frozen：{paths.is_frozen()}  app_dir：{paths.app_dir()}")
+    print(f"tesseract_cmd：{pytesseract.pytesseract.tesseract_cmd}")
+    print(f"TESSDATA_PREFIX：{os.environ.get('TESSDATA_PREFIX')}")
+    print()
+
+    tr = ocr_name_trace(img)
+    print(f"ink：{tr.get('ink')}")
+    for st in tr.get("steps", []):
+        print(
+            f"  [{st.get('step')}] raw={st.get('raw')!r} "
+            f"cleaned={st.get('cleaned')!r} "
+            f"accepted={st.get('accepted')} reason={st.get('reason')}"
+        )
+    print(f"candidates：{tr.get('candidates')}")
+    if target:
+        col = sp.find_column_for_player_cands([(0, tr.get("candidates") or [])], target)
+        print(f"比對目標 {target!r} -> col={col}")
+    print("=== 結束 ===")
+    return 0
+
+
 def _selftest() -> int:
     """打包後自我檢查：確認設定檔、語言檔、Tesseract、OCR 都能正確載入。"""
     import os
@@ -510,6 +551,16 @@ def main() -> int:
     parser.add_argument("--patrol", action="store_true", help="換房模式（巡房跟注），覆寫 config 的 room.mode")
     parser.add_argument("--stay", action="store_true", help="掛房模式（單桌跟注），覆寫 config 的 room.mode")
     parser.add_argument("--selftest", action="store_true", help="自我檢查：確認設定檔/語言檔/OCR 可正常載入後結束")
+    parser.add_argument(
+        "--test-crop",
+        metavar="PNG",
+        help="離線診斷：對 stats_debug 的 colN-empty.png 重跑表頭 OCR，查客戶端為何讀不到",
+    )
+    parser.add_argument(
+        "--test-target",
+        metavar="NAME",
+        help="配合 --test-crop：指定追蹤暱稱，看 fuzzy 比對是否過門檻",
+    )
     parser.add_argument("--balance-test", action="store_true", help="測試讀取左下角餘額與帳號名（校正 roi.balance / roi.account_name）")
     parser.add_argument("--list-windows", action="store_true", help="診斷：列出星城視窗（找不到時列出其他大視窗）")
     parser.add_argument("--nav-test", action="store_true", help="診斷：每2秒判斷目前在大廳/棋牌/入口/牌桌哪一頁，印出各模板分數")
@@ -531,6 +582,9 @@ def main() -> int:
     # 先做智能合併：保留舊值、補上新選項（自動更新者的舊檔才看得到新選項）
     _migrate_launch_settings()
     settings = _read_launch_settings()
+
+    if getattr(args, "test_crop", None):
+        return _test_crop(args.test_crop, getattr(args, "test_target", None))
 
     if args.selftest or (settings["selftest"] and not (args.patrol or args.stay)):
         return _selftest()
