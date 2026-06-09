@@ -1,6 +1,6 @@
 {
-  "version": "1.2.28",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.28/StarFollow_1.2.28.zip",
-  "sha256": "3839687c6741234e8d4533b2c7e4f2b5adbd75196662cf3a56b769e09cb48768",
-  "notes": "效能優化（掛房）：餘額上傳改跟引擎階段走，只在穩定在桌且空檔（等開局/下注完等開牌）才抓圖上傳，避免與定位/讀統計表搶資源造成卡頓；開機不再瞬間搶上傳；餘額樣本 5→3、關 debug 存圖；新增主迴圈單圈過久(>2.5s)警告 log 供卡頓診斷"
+  "version": "1.2.29",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.29/StarFollow_1.2.29.zip",
+  "sha256": "da9953346d73500e67c66e3fcaabbfb037e5e569aaf01ff577377483c8d35512",
+  "notes": "效能修復（掛房／找對象）：表頭暱稱 OCR 恢復「每欄讀到就停」(early-return)。先前每欄跑滿全部前處理步驟、每步都另起 tesseract 子行程，7 欄×7 步約 28 秒吃掉整個下注窗導致看門狗強制收尾；門檻已降到 0.7 後第一步即足以辨識多數暱稱。首局定位與快取驗證大幅加速（實測表頭 OCR 28s→約數秒、快取驗證 4.4s→約 0.6s），準度不變"
 }

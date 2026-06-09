@@ -365,23 +365,34 @@ def ocr_name_trace(img: np.ndarray) -> dict:
     trace["ink"] = _ink_stats(gray)
     seen: set[str] = set()
 
-    def _run(step: str, proc: np.ndarray, psm: int = 7) -> None:
+    def _run(step: str, proc: np.ndarray, psm: int = 7) -> bool:
         ent = _try_name_ocr(proc, step=step, config=f"--psm {psm} -l chi_tra")
         trace["steps"].append(ent)
         if ent["accepted"] and ent["cleaned"] not in seen:
             seen.add(ent["cleaned"])
             trace["candidates"].append(ent["cleaned"])
+            return True
+        return False
 
-    _run("legacy_s3", preprocess_name_cell(img, scale=3))
+    # 速度關鍵：每欄「讀到就停」。每次 OCR 都要另起一個 tesseract 子行程（客戶端約 0.6s），
+    # 跑滿全部步驟 ×7 欄會吃掉整個下注窗（實測首局表頭曾耗 ~28s 而被看門狗收尾）。
+    # 比對門檻已降到 0.7，最便宜的 legacy_s3 即可讓多數暱稱過關，故只在「讀空」時才往下補。
+    if _run("legacy_s3", preprocess_name_cell(img, scale=3)):
+        return trace
     if not trace["ink"]["has_ink"]:
         return trace
-    # 白字表頭：打包版 Tesseract 對 Otsu 常讀空，專用前處理；跑完全部步驟再取最佳候選
-    _run("wtext_s3", preprocess_name_cell_wtext(img, scale=3))
-    _run("wtext_s3_psm6", preprocess_name_cell_wtext(img, scale=3), psm=6)
-    _run("adapt_s3", _variant_image(gray, 3, "adaptive"))
+    # 白字表頭：打包版 Tesseract 對 Otsu 常讀空，逐一補跑專用前處理，任一步讀到就停。
+    if _run("wtext_s3", preprocess_name_cell_wtext(img, scale=3)):
+        return trace
+    if _run("wtext_s3_psm6", preprocess_name_cell_wtext(img, scale=3), psm=6):
+        return trace
+    if _run("adapt_s3", _variant_image(gray, 3, "adaptive")):
+        return trace
     if img.shape[1] > 0 and img.shape[1] < 155:
-        _run("legacy_s4", preprocess_name_cell(img, scale=4))
-        _run("wtext_s4", preprocess_name_cell_wtext(img, scale=4))
+        if _run("legacy_s4", preprocess_name_cell(img, scale=4)):
+            return trace
+        if _run("wtext_s4", preprocess_name_cell_wtext(img, scale=4)):
+            return trace
         _run("adapt_s4", _variant_image(gray, 4, "adaptive"))
     return trace
 
