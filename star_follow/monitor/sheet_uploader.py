@@ -17,6 +17,7 @@ import time
 from datetime import datetime
 
 _RETRY_INTERVAL_S = 25.0  # 輪詢／補上傳間隔（秒）：越小越貼近整點、失敗補上傳越快
+_GATE_WAIT_S = 90.0       # 整點到了、但主流程在忙時，最多等多久等到空檔再上傳
 
 import numpy as np
 from mss import mss
@@ -31,6 +32,33 @@ logger = logging.getLogger(__name__)
 
 _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 _HEADER = ["帳號", "餘額", "更新時間"]
+
+
+class UploadGate:
+    """協調餘額上傳與主迴圈：只在主流程空檔才放行上傳的抓圖／OCR。
+
+    餘額上傳要抓整張圖＋多次 OCR，若和「定位／讀統計表」同時進行會互搶 CPU 與
+    Tesseract，造成卡頓。故讓上傳跟著引擎階段走：只有「穩定在（指定）牌桌」且引擎
+    處於空檔階段（IDLE 等待開局／LOCKED 下注完等開牌）時才放行；其餘一律讓路。
+    """
+
+    _IDLE_PHASES = frozenset({"IDLE", "LOCKED"})
+
+    def __init__(self, engine: object | None = None) -> None:
+        self._engine = engine
+
+    def can_upload_now(self) -> bool:
+        e = self._engine
+        if e is None:
+            return True  # 沒接引擎（測試／單獨使用）→ 不設限
+        try:
+            if not getattr(e, "_at_table_stable", False):
+                return False
+            phase = getattr(e, "phase", None)
+            name = getattr(phase, "name", "")
+            return name in self._IDLE_PHASES
+        except Exception:  # noqa: BLE001  協調用，任何讀取異常都當「先別上傳」
+            return False
 
 
 def _capture_region_own(left: int, top: int, width: int, height: int) -> np.ndarray:
@@ -79,9 +107,10 @@ def read_account_name_once(cfg: AppConfig) -> str:
 class SheetUploader:
     """背景執行緒：每個整點讀餘額並上傳 Google 試算表（含補上傳）。"""
 
-    def __init__(self, cfg: AppConfig) -> None:
+    def __init__(self, cfg: AppConfig, gate: "UploadGate | None" = None) -> None:
         self.cfg = cfg
         self.sh = cfg.sheet
+        self._gate = gate
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._ws = None  # 快取的工作表物件
@@ -156,7 +185,8 @@ class SheetUploader:
             return False
         from star_follow.monitor.screen_gate import stable_balance
 
-        balance = stable_balance(cfg=self.cfg)
+        # 樣本減量（5→3）並關閉 debug 存圖，降低上傳當下的 OCR／IO 負擔。
+        balance = stable_balance(cfg=self.cfg, samples=3, min_agree=2, debug=False)
         if balance <= 0:
             logger.info("餘額上傳：暫時讀不到餘額（視窗未開或 OCR 失敗），稍後重試")
             return False
@@ -183,29 +213,51 @@ class SheetUploader:
                 return
             time.sleep(1.0)
 
+    def _wait_gate_open(self, timeout_s: float) -> bool:
+        """等主流程進入空檔（在桌且非定位/讀表階段）才放行上傳。
+
+        逾時仍未開放回 False（這個整點先不上傳，下一輪再補）。沒接 gate 直接放行。
+        """
+        if self._gate is None:
+            return True
+        deadline = time.monotonic() + timeout_s
+        logged = False
+        while not self._stop.is_set() and time.monotonic() < deadline:
+            if self._gate.can_upload_now():
+                return True
+            if not logged:
+                logger.info("餘額上傳：主流程忙碌（定位/讀表中），等空檔再上傳")
+                logged = True
+            if self._stop.wait(1.0):
+                return False
+        return False
+
     def _run(self) -> None:
         """每個整點各上傳一次，但「不必剛好在整點」：
 
         到了某個整點後，只要當下還沒上傳成功（可能剛好在辨識別的東西、或視窗沒開、
         OCR 一時讀不到），就每隔一小段時間重試，直到該整點的餘額成功補上傳為止；
         成功後該整點就不再重複上傳，等下一個整點。
+
+        上傳前一律先等主流程空檔（見 _wait_gate_open），避免與定位/讀表搶資源。
         """
         uploaded_hour: datetime | None = None  # 已成功上傳的「整點」
+        if not self.sh.upload_on_start:
+            # 不在開機時上傳 → 把目前整點標記為已處理，等下一個整點才上傳。
+            uploaded_hour = self._current_hour()
 
-        if self.sh.upload_on_start:
-            self._wait_window_ready()
-            if self._upload_once():
-                uploaded_hour = self._current_hour()
+        self._wait_window_ready()
 
         while not self._stop.is_set():
             try:
                 cur_hour = self._current_hour()
                 if uploaded_hour != cur_hour:
-                    # 這個整點還沒成功上傳 → 嘗試（含補上傳：整點過了也照上）
-                    if self._upload_once():
-                        uploaded_hour = cur_hour
-                    else:
-                        logger.info("本整點（%s）尚未成功上傳，稍後重試", cur_hour.strftime("%H:%M"))
+                    # 這個整點還沒成功上傳 → 等到空檔再嘗試（含補上傳：整點過了也照上）
+                    if self._wait_gate_open(_GATE_WAIT_S):
+                        if self._upload_once():
+                            uploaded_hour = cur_hour
+                        else:
+                            logger.info("本整點（%s）尚未成功上傳，稍後重試", cur_hour.strftime("%H:%M"))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("餘額上傳迴圈例外：%s", exc)
             # 短間隔輪詢：盡量貼近整點，且失敗時能很快補上傳

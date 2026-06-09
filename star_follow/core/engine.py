@@ -104,6 +104,9 @@ class FollowEngine:
         self._locked_since_mono = 0.0  # 進入 LOCKED 的時點（時間保險用）
         self._stay_idle_rounds = 0  # 掛房：連續沒下注的局數（防踢用）
         self._stay_first_track_done = False  # 掛房：是否已成功追到對象（暖機完成）
+        # 餘額上傳協調用：是否「穩定待在（指定）牌桌」。上傳只在此為真且非下注/讀表階段才放行，
+        # 避免上傳的抓圖/OCR 與主流程定位讀表搶資源造成卡頓。
+        self._at_table_stable = False
         self._stay_absent_streak = 0  # 掛房：連續沒讀到任何指定對象的局數
         self._stay_paused = False  # 掛房：pause 模式下對象全離桌 → 停跟注/防踢/回桌
         self._stay_absent_active = False  # 掛房：目前是否處於「對象全離桌」狀態（各模式共用）
@@ -1389,6 +1392,9 @@ class FollowEngine:
             self._win_logged = False
         self._win = win
         frame = capture_client(win)
+        # 預設本圈「未確認穩定在桌」；確認在桌且不需回桌/切桌時才在下方設為 True。
+        # 任何在確認前就 return 的分支（不在桌、回桌中、切桌中）都會維持 False → 擋住上傳。
+        self._at_table_stable = False
 
         from star_follow.automation import lobby_nav
 
@@ -1441,6 +1447,8 @@ class FollowEngine:
                 return True
 
         frame = capture_client(win)
+        # 已確認在（指定）牌桌、不需回桌/切桌 → 允許餘額上傳在空檔（IDLE/LOCKED）進行。
+        self._at_table_stable = True
 
         if not self._win_logged:
             focus_window(win.hwnd)
@@ -1993,7 +2001,12 @@ class FollowEngine:
         )
         while self._running:
             try:
+                _loop_t0 = time.perf_counter()
                 ok = self.run_patrol_once() if patrol else self.run_once()
+                _loop_ms = (time.perf_counter() - _loop_t0) * 1000.0
+                # 卡頓診斷：單圈過久（多半是某步阻塞或與背景上傳搶資源）→ 記一筆，方便定位。
+                if _loop_ms >= 2500.0:
+                    logger.warning("主迴圈單圈耗時 %.0f ms（phase=%s）— 偏慢，留意是否有阻塞", _loop_ms, self.phase.name)
                 if ok is False and self._win is None:
                     # 視窗不在，降速輪詢避免空轉
                     time.sleep(1.0)

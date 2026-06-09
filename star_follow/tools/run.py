@@ -696,11 +696,14 @@ def main() -> int:
 
     uploader = None
     if engine.cfg.sheet.enabled:
-        from star_follow.monitor.sheet_uploader import SheetUploader
+        from star_follow.monitor.sheet_uploader import SheetUploader, UploadGate
 
-        uploader = SheetUploader(engine.cfg)
+        # 上傳跟著引擎階段走：只在穩定在桌且空檔（等開局/下注完等開牌）才上傳，
+        # 不與定位/讀統計表搶資源。
+        gate = UploadGate(engine)
+        uploader = SheetUploader(engine.cfg, gate=gate)
         uploader.start()
-        print("餘額上傳：每整點上傳到 Google 試算表")
+        print("餘額上傳：在牌桌空檔（避開定位/讀表）每整點上傳到 Google 試算表")
 
     try:
         engine.run_loop()

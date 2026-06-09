@@ -1,6 +1,6 @@
 {
-  "version": "1.2.27",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.27/StarFollow_1.2.27.zip",
-  "sha256": "59d5b0c9568e5c1676c7149272bd3ebdefab73b45fc36a711dc3e1eac0b66b87",
-  "notes": "掛房防踢加強：首次 OCR 追到對象時先補一手閒（抵消暖機期遊戲端閒置）；表頭讀不到時不計防踢閒置，但表頭有名字、對象真的不在房時仍照常累計並補注。含 v1.2.26 表頭 OCR 全候選比對與 fuzzy 門檻 0.7"
+  "version": "1.2.28",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.28/StarFollow_1.2.28.zip",
+  "sha256": "3839687c6741234e8d4533b2c7e4f2b5adbd75196662cf3a56b769e09cb48768",
+  "notes": "效能優化（掛房）：餘額上傳改跟引擎階段走，只在穩定在桌且空檔（等開局/下注完等開牌）才抓圖上傳，避免與定位/讀統計表搶資源造成卡頓；開機不再瞬間搶上傳；餘額樣本 5→3、關 debug 存圖；新增主迴圈單圈過久(>2.5s)警告 log 供卡頓診斷"
 }
