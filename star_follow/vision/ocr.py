@@ -350,8 +350,13 @@ def _ink_stats(gray: np.ndarray) -> dict:
     }
 
 
-def ocr_name_trace(img: np.ndarray) -> dict:
-    """表頭暱稱 OCR 完整追蹤：每步 raw 輸出、過濾原因、最終候選（供客戶端離線診斷）。"""
+def ocr_name_trace(img: np.ndarray, *, deep: bool = True) -> dict:
+    """表頭暱稱 OCR 完整追蹤：每步 raw 輸出、過濾原因、最終候選（供客戶端離線診斷）。
+
+    deep=False（淺掃）：只跑最便宜的 legacy_s3。空白／裝飾欄即使 has_ink=True 也不再
+    把白字補救 7 步全跑完（那是首局整排表頭 ~26s 的元凶）。深掃（白字補救）只在呼叫端
+    確認「對象還沒對到」時，才針對需要的欄補跑，避免在空欄上空轉。
+    """
     trace: dict = {
         "shape": list(img.shape) if img.size else [],
         "ink": {},
@@ -381,6 +386,8 @@ def ocr_name_trace(img: np.ndarray) -> dict:
         return trace
     if not trace["ink"]["has_ink"]:
         return trace
+    if not deep:
+        return trace
     # 白字表頭：打包版 Tesseract 對 Otsu 常讀空，逐一補跑專用前處理，任一步讀到就停。
     if _run("wtext_s3", preprocess_name_cell_wtext(img, scale=3)):
         return trace
@@ -397,9 +404,9 @@ def ocr_name_trace(img: np.ndarray) -> dict:
     return trace
 
 
-def ocr_name_candidates(img: np.ndarray) -> list[str]:
+def ocr_name_candidates(img: np.ndarray, *, deep: bool = True) -> list[str]:
     """讀玩家暱稱，回傳候選字串清單（去重、長度>=2）。"""
-    return list(ocr_name_trace(img)["candidates"])
+    return list(ocr_name_trace(img, deep=deep)["candidates"])
 
 
 def _consensus_name(cands: list[str]) -> str:

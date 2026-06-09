@@ -387,11 +387,13 @@ def set_header_ocr(use_paddle: bool) -> None:
     _USE_PADDLE_HEADER = use_paddle
 
 
-def _ocr_header_cands(cell: np.ndarray) -> list[str]:
+def _ocr_header_cands(cell: np.ndarray, *, deep: bool = True) -> list[str]:
     """玩家暱稱候選（中文）：PaddleOCR 可用就用它；否則用多倍率＋多二值化的 Tesseract。
 
     回傳「多個候選」而非單一字串：比對時拿目標去比所有候選取最佳，只要任一種前處理讀對
     （或接近）就配得到，大幅降低單一門檻把整欄切壞而落空的風險。
+
+    deep=False：淺掃（只跑最便宜的一步），空欄不再空轉跑滿白字補救步驟。
     """
     if _USE_PADDLE_HEADER and paddle_available():
         try:
@@ -401,7 +403,7 @@ def _ocr_header_cands(cell: np.ndarray) -> list[str]:
                 return [name]
         except Exception:
             pass
-    return [_clean_name(c) for c in ocr_name_candidates(cell) if _clean_name(c)]
+    return [_clean_name(c) for c in ocr_name_candidates(cell, deep=deep) if _clean_name(c)]
 
 
 def _pick_consensus(cands: list[str]) -> str:
@@ -438,19 +440,26 @@ def read_column_header_cands(
     layout: dict,
     *,
     traces_out: list[dict] | None = None,
+    deep: bool = True,
+    only_cols: set[int] | None = None,
 ) -> list[tuple[int, list[str]]]:
     """讀各欄表頭暱稱「候選清單」，回傳 (欄位索引, [候選名...])。
 
     traces_out：若提供 list，會填入每欄 ocr_name_trace（與 OCR 同一次，供診斷存檔）。
+    deep=False：淺掃，每欄只跑最便宜的一步（空欄不再空轉）。
+    only_cols：若提供，只 OCR 這些欄索引（深掃補救用，省掉已對到的欄）。
     """
     out: list[tuple[int, list[str]]] = []
     for idx, cell in _header_cells(table, layout):
+        if only_cols is not None and idx not in only_cols:
+            out.append((idx, []))
+            continue
         if traces_out is not None:
-            tr = ocr_name_trace(cell)
+            tr = ocr_name_trace(cell, deep=deep)
             traces_out.append(tr)
             cands = [_clean_name(c) for c in tr["candidates"] if _clean_name(c)]
         else:
-            cands = [_clean_name(c) for c in _ocr_header_cands(cell) if _clean_name(c)]
+            cands = [_clean_name(c) for c in _ocr_header_cands(cell, deep=deep) if _clean_name(c)]
         out.append((idx, cands))
     return out
 
@@ -631,13 +640,37 @@ def resolve_follow_columns(
     layout = cfg.raw.get("stats_layout", {})
 
     # 一律讀表頭重新確認欄位；hint 只當提示，不直接採用（換桌後舊欄位會指到路人）。
+    # 兩段式掃描（首局整排表頭曾耗 ~26s 的解法）：
+    #   ① 淺掃全欄：每欄只跑最便宜的一步。空白／裝飾欄不再把白字補救 7 步全跑完空轉。
+    #   ② 僅當還有對象沒對到，才對「有墨水但淺掃讀空」的欄補跑深掃（白字補救）。
+    #      多數桌的對象暱稱淺掃即可讀到 → 只花 ~一排的便宜 OCR，速度大幅提升。
     resolved: dict[str, int] = {}
-    cand_headers = read_column_header_cands(table, layout)
-    headers: list[tuple[int, str]] = [(idx, _pick_consensus(c)) for idx, c in cand_headers]
+    cand_headers = read_column_header_cands(table, layout, deep=False)
     for name, hint in follow_targets:
         col = find_column_for_player_cands(cand_headers, name, hint=hint)
         if col is not None:
             resolved[name] = col
+
+    unresolved = [(n, h) for n, h in follow_targets if n not in resolved]
+    if unresolved:
+        ink_cols = {idx for idx, _cell in _header_cells(table, layout)} - {
+            idx for idx, c in cand_headers if c
+        }
+        if ink_cols:
+            deep_headers = read_column_header_cands(
+                table, layout, deep=True, only_cols=ink_cols
+            )
+            merged = {idx: list(c) for idx, c in cand_headers}
+            for idx, c in deep_headers:
+                if c:
+                    merged.setdefault(idx, []).extend(x for x in c if x not in merged[idx])
+            cand_headers = [(idx, merged.get(idx, c)) for idx, c in cand_headers]
+            for name, hint in unresolved:
+                col = find_column_for_player_cands(cand_headers, name, hint=hint)
+                if col is not None:
+                    resolved[name] = col
+
+    headers: list[tuple[int, str]] = [(idx, _pick_consensus(c)) for idx, c in cand_headers]
 
     elapsed = (time.perf_counter() - t0) * 1000
     return StatsParseResult(

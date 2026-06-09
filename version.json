@@ -1,6 +1,6 @@
 {
-  "version": "1.2.29",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.29/StarFollow_1.2.29.zip",
-  "sha256": "da9953346d73500e67c66e3fcaabbfb037e5e569aaf01ff577377483c8d35512",
-  "notes": "效能修復（掛房／找對象）：表頭暱稱 OCR 恢復「每欄讀到就停」(early-return)。先前每欄跑滿全部前處理步驟、每步都另起 tesseract 子行程，7 欄×7 步約 28 秒吃掉整個下注窗導致看門狗強制收尾；門檻已降到 0.7 後第一步即足以辨識多數暱稱。首局定位與快取驗證大幅加速（實測表頭 OCR 28s→約數秒、快取驗證 4.4s→約 0.6s），準度不變"
+  "version": "1.2.30",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.30/StarFollow_1.2.30.zip",
+  "sha256": "ca798f68e1940711b64c39425f66e95fb340f06526c4abe3ffdf0b53c4808e2b",
+  "notes": "修兩個掛房問題：①防踢閒置漏算：表頭快取命中走刷新金額路徑時 header_name_count=0，導致對象在桌休息（一直下閒被略過）卻不累計閒置、不補防踢→被遊戲端 5 局未下踢出。改以『已對到對象欄位』即視為讀表成功。②首局表頭 OCR 約 26s：空白/裝飾欄雖 has_ink 仍把白字補救 7 步全跑完空轉。改兩段式：先淺掃全欄（每欄只跑最便宜一步），僅當對象還沒對到才對讀空的欄補跑深掃。首局定位大幅加速、不再被單局逾時看門狗收尾"
 }

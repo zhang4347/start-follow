@@ -1207,8 +1207,13 @@ class FollowEngine:
             self._last_stay_pause_log_mono = now
 
     def _stay_table_read_ok(self) -> bool:
-        """本局統計表表頭是否確實讀到名字（非 OCR 暖機／表沒開好）。"""
-        return self.ctx.header_name_count > 0
+        """本局統計表表頭是否確實讀到名字（非 OCR 暖機／表沒開好）。
+
+        已追到對象（resolved_columns 有值）就是表頭讀成功的鐵證——快取命中走刷新金額
+        路徑時不會重數 header_name_count，但對象欄位確實對上了，仍須視為讀表成功，
+        否則防踢閒置會永遠不累計（對象在桌休息時我方一直沒下注卻被當暖機 → 被踢）。
+        """
+        return self.ctx.header_name_count > 0 or bool(self.ctx.resolved_columns)
 
     def _stay_target_confirmed_absent(self) -> bool:
         """表頭讀得到其他玩家，但追蹤對象不在本桌（真的離桌，不是暖機讀不到）。"""
