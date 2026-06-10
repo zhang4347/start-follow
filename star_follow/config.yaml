@@ -89,6 +89,10 @@ betting:
   anti_kick_side: 閒
   anti_kick_amount: 1000
   anti_kick_first_track_bet: true
+  follow_ratio_enabled: true
+  follow_ratio_min: 0.8
+  follow_ratio_max: 0.99
+  follow_ratio_round_to: 1000
 telegram:
   enabled: false
   bot_token: 8893028334:AAGNJQt5djgMjjmCswxfwTUdh2h7VdvoXMM
@@ -140,6 +144,7 @@ vision:
   fast_ocr: true
   ocr_scale: 1
   header_use_paddle: false
+  header_ocr_budget_s: 8.0
 roi:
   countdown:
   - 577

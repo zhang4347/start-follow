@@ -442,16 +442,22 @@ def read_column_header_cands(
     traces_out: list[dict] | None = None,
     deep: bool = True,
     only_cols: set[int] | None = None,
+    deadline: float | None = None,
 ) -> list[tuple[int, list[str]]]:
     """讀各欄表頭暱稱「候選清單」，回傳 (欄位索引, [候選名...])。
 
     traces_out：若提供 list，會填入每欄 ocr_name_trace（與 OCR 同一次，供診斷存檔）。
     deep=False：淺掃，每欄只跑最便宜的一步（空欄不再空轉）。
     only_cols：若提供，只 OCR 這些欄索引（深掃補救用，省掉已對到的欄）。
+    deadline：time.perf_counter() 截止點；到點後剩餘欄位不再 OCR（留空），
+        避免慢機器卡在整排 20s+ 的讀表死循環。
     """
     out: list[tuple[int, list[str]]] = []
     for idx, cell in _header_cells(table, layout):
         if only_cols is not None and idx not in only_cols:
+            out.append((idx, []))
+            continue
+        if deadline is not None and time.perf_counter() >= deadline:
             out.append((idx, []))
             continue
         if traces_out is not None:
@@ -644,6 +650,10 @@ def resolve_follow_columns(
     #   ① 淺掃全欄：每欄只跑最便宜的一步。空白／裝飾欄不再把白字補救 7 步全跑完空轉。
     #   ② 僅當還有對象沒對到，才對「有墨水但淺掃讀空」的欄補跑深掃（白字補救）。
     #      多數桌的對象暱稱淺掃即可讀到 → 只花 ~一排的便宜 OCR，速度大幅提升。
+    budget = getattr(cfg.vision, "header_ocr_budget_s", 8.0) or 8.0
+    deadline = t0 + float(budget)
+    # 淺掃「不」設預算：整排每欄只跑最便宜的 legacy_s3（最多欄數次，本來就有上限），
+    # 這是真正會對到名字的一步（含 閃光福雷噓→閃光福雷嚏），絕不能被時間砍斷而漏讀。
     resolved: dict[str, int] = {}
     cand_headers = read_column_header_cands(table, layout, deep=False)
     for name, hint in follow_targets:
@@ -652,13 +662,16 @@ def resolve_follow_columns(
             resolved[name] = col
 
     unresolved = [(n, h) for n, h in follow_targets if n not in resolved]
-    if unresolved:
+    # 只有「白字深掃補救」才受時間預算限制——它會對每個讀空的欄跑滿 7 步前處理，
+    # 是慢機器暴衝到 20s+ 的元凶。超時就放棄補救（對象沒對到會走防踢路徑，下一局再試），
+    # 但不影響上面淺掃已經對到的對象。
+    if unresolved and time.perf_counter() < deadline:
         ink_cols = {idx for idx, _cell in _header_cells(table, layout)} - {
             idx for idx, c in cand_headers if c
         }
         if ink_cols:
             deep_headers = read_column_header_cands(
-                table, layout, deep=True, only_cols=ink_cols
+                table, layout, deep=True, only_cols=ink_cols, deadline=deadline
             )
             merged = {idx: list(c) for idx, c in cand_headers}
             for idx, c in deep_headers:
@@ -671,6 +684,15 @@ def resolve_follow_columns(
                     resolved[name] = col
 
     headers: list[tuple[int, str]] = [(idx, _pick_consensus(c)) for idx, c in cand_headers]
+
+    if time.perf_counter() >= deadline and len(resolved) < len(follow_targets):
+        _sp_logger.warning(
+            "表頭 OCR 達時間預算 %.1fs 仍未對齊全部對象（已對到 %d/%d）→ 本局先放棄整排掃描，"
+            "改走防踢/下一局重試（可調 vision.header_ocr_budget_s）",
+            float(budget),
+            len(resolved),
+            len(follow_targets),
+        )
 
     elapsed = (time.perf_counter() - t0) * 1000
     return StatsParseResult(

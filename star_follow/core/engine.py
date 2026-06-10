@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -789,6 +791,7 @@ class FollowEngine:
         # 只下莊/閒。
         self.ctx.last_raw_bet_areas = {area for area, amt in plan.items() if amt > 0}
         plan = self._filter_follow_plan(plan)
+        plan = self._scale_follow_plan(plan)
         return cap_plan(plan, self.cfg.chip_values)
 
     # 兩模式都「絕不跟」莊/閒（硬規則，不受 config 影響；換桌只跟特殊邊注、
@@ -806,6 +809,33 @@ class FollowEngine:
                     logger.info("不跟 %s（莊/閒一律不跟），略過 %d", area, amount)
                 continue
             out[area] = amount
+        return out
+
+    def _scale_follow_plan(self, plan: dict[str, int]) -> dict[str, int]:
+        """跟注擬真：把跟到的金額按隨機比例縮小，再無條件進位到整數注，避免每把都
+        跟對方一模一樣太明顯。比例每局隨機取一次（同一局多區同比例，較自然）。
+        只作用於『跟對方』的金額；防踢補注走另一條路徑、維持最小注不受影響。
+        """
+        bcfg = self.cfg.betting
+        if not getattr(bcfg, "follow_ratio_enabled", False) or not plan:
+            return plan
+        lo = min(bcfg.follow_ratio_min, bcfg.follow_ratio_max)
+        hi = max(bcfg.follow_ratio_min, bcfg.follow_ratio_max)
+        # 比例 >=1（或設定異常）等於不縮小，直接跟原額。
+        if lo <= 0 or (lo >= 1.0 and hi >= 1.0):
+            return plan
+        unit = bcfg.follow_ratio_round_to if bcfg.follow_ratio_round_to > 0 else 1000
+        min_chip = min(self.cfg.chip_values) if self.cfg.chip_values else unit
+        ratio = random.uniform(lo, hi)
+        out: dict[str, int] = {}
+        for area, amount in plan.items():
+            if amount <= 0:
+                out[area] = amount
+                continue
+            scaled = max(min_chip, math.ceil(amount * ratio / unit) * unit)
+            if scaled != amount:
+                logger.info("跟注擬真 %s：%d ×%.2f → 進位 %d", area, amount, ratio, scaled)
+            out[area] = scaled
         return out
 
     def _try_prefetch(self, frame, t: int | None) -> None:

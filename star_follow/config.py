@@ -60,6 +60,9 @@ class VisionConfig:
     fast_ocr: bool = True
     ocr_scale: int = 1
     header_use_paddle: bool = True
+    # 整排表頭 OCR 的總時間預算（秒）。超時就停止掃描剩餘欄位，避免慢機器卡在
+    # 「開表→整排 OCR 20s+→逾時→重來」的死循環。對象沒對到時改走防踢路徑。
+    header_ocr_budget_s: float = 8.0
 
 
 @dataclass
@@ -134,6 +137,13 @@ class BettingConfig:
     anti_kick_amount: int = 0         # 補注金額，0=用最小籌碼
     # 掛房：首次 OCR 追到對象時先補一手閒（抵消進桌/OCR 暖機的閒置），之後才累計未下注局數
     anti_kick_first_track_bet: bool = True
+    # 跟注金額擬真：避免每把都跟對方一模一樣太明顯。
+    # 下注額 = 對方金額 × 隨機比例(min~max)，再「無條件進位」到 round_to 的倍數（最低一注）。
+    # 例：對方 10000、比例 0.83 → 8300 → 進位到 9000。範圍可在「啟動設定.txt」調整。
+    follow_ratio_enabled: bool = True
+    follow_ratio_min: float = 0.8
+    follow_ratio_max: float = 0.99
+    follow_ratio_round_to: int = 1000
 
 
 # 內建 Telegram 通知預設：放在「程式碼」裡，才會被打包進 exe，並隨自動更新送到
@@ -287,6 +297,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
             fast_ocr=bool(v.get("fast_ocr", True)),
             ocr_scale=int(v.get("ocr_scale", 1)),
             header_use_paddle=bool(v.get("header_use_paddle", True)),
+            header_ocr_budget_s=float(v.get("header_ocr_budget_s", 8.0)),
         ),
         automation=AutomationConfig(
             menu_click_backend=str(
@@ -331,6 +342,10 @@ def load_config(path: Path | str | None = None) -> AppConfig:
             anti_kick_side=str(bt.get("anti_kick_side", "閒")),
             anti_kick_amount=int(bt.get("anti_kick_amount", 0)),
             anti_kick_first_track_bet=bool(bt.get("anti_kick_first_track_bet", True)),
+            follow_ratio_enabled=bool(bt.get("follow_ratio_enabled", True)),
+            follow_ratio_min=float(bt.get("follow_ratio_min", 0.8)),
+            follow_ratio_max=float(bt.get("follow_ratio_max", 0.99)),
+            follow_ratio_round_to=int(bt.get("follow_ratio_round_to", 1000)),
         ),
         telegram=TelegramConfig(
             enabled=bool(tg.get("enabled", False)),
@@ -419,6 +434,7 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
         "fast_ocr": cfg.vision.fast_ocr,
         "ocr_scale": cfg.vision.ocr_scale,
         "header_use_paddle": cfg.vision.header_use_paddle,
+        "header_ocr_budget_s": cfg.vision.header_ocr_budget_s,
     }
     data["automation"] = {
         "menu_click_backend": cfg.automation.menu_click_backend,
@@ -459,6 +475,10 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
         "anti_kick_side": cfg.betting.anti_kick_side,
         "anti_kick_amount": cfg.betting.anti_kick_amount,
         "anti_kick_first_track_bet": cfg.betting.anti_kick_first_track_bet,
+        "follow_ratio_enabled": cfg.betting.follow_ratio_enabled,
+        "follow_ratio_min": cfg.betting.follow_ratio_min,
+        "follow_ratio_max": cfg.betting.follow_ratio_max,
+        "follow_ratio_round_to": cfg.betting.follow_ratio_round_to,
     }
     data["telegram"] = {
         "enabled": cfg.telegram.enabled,

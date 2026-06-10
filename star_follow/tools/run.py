@@ -79,6 +79,7 @@ def _read_launch_settings() -> dict:
         "stay_table": None,
         "stay_targets": [],
         "account_name": None,
+        "follow_ratio": None,  # (lo, hi) 比例範圍；False=關閉(跟原額)；None=不指定(用 config 預設)
     }
     p = paths.launch_settings_path()
     if not p.is_file():
@@ -140,7 +141,32 @@ def _read_launch_settings() -> dict:
         elif any(k in key for k in ("帳號", "帐号", "帳戶", "account", "玩家")):
             if val:
                 out["account_name"] = val
+        elif any(k in key for k in ("跟注比例", "下注比例", "比例", "ratio")):
+            out["follow_ratio"] = _parse_ratio_setting(val)
     return out
+
+
+def _parse_ratio_setting(val: str):
+    """解析『跟注比例』：可填範圍 0.8-0.99 / 0.8~0.99，或單一值 0.9（固定比例），
+    或填 關/off/100% 代表不縮小（跟對方原額）。讀不懂回 None（沿用 config 預設）。
+    """
+    import re as _re
+
+    v = val.strip().lower().replace("%", "")
+    if not v:
+        return None
+    if any(x in v for x in ("關", "閉", "off", "no", "false", "原額", "100")):
+        return False
+    nums = [float(x) for x in _re.findall(r"\d+(?:\.\d+)?", v)]
+    if not nums:
+        return None
+    # 允許用百分比寫法（如 80-99）：>1 視為百分比自動換算。
+    nums = [n / 100.0 if n > 1.0 else n for n in nums]
+    lo = min(nums)
+    hi = max(nums)
+    lo = max(0.01, min(lo, 1.0))
+    hi = max(0.01, min(hi, 1.0))
+    return (lo, hi)
 
 
 def _split_targets(val: str) -> list[str]:
@@ -155,6 +181,7 @@ _LAUNCH_OPTION_KEYS: dict[str, tuple[str, ...]] = {
     "帳號": ("帳號", "帐号", "帳戶", "account", "玩家"),
     "桌號": ("桌號", "桌号", "桌", "table"),
     "對象": ("對象", "对象", "跟注對象", "target"),
+    "跟注比例": ("跟注比例", "下注比例", "比例", "ratio"),
 }
 _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
     "帳號": (
@@ -176,6 +203,15 @@ _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
         "#    若「指定的對象全部都不在這桌」→ 程式會暫停跟注（不補注防踢、\n"
         "#    被踢回大廳也不會自動回桌），並透過 Telegram 通知。\n"
         "對象="
+    ),
+    "跟注比例": (
+        "# 【跟注比例】跟注金額 = 對方金額 × 隨機比例，再無條件進位到整數注（最低 1000）。\n"
+        "#    避免每把都跟對方一模一樣太明顯。例：對方 10000、比例 0.83 → 進位到 9000。\n"
+        "#    填範圍 = 每把在此範圍隨機（建議）：例 跟注比例=0.8-0.99\n"
+        "#    填單一值 = 固定比例：例 跟注比例=0.9\n"
+        "#    填『關』 = 不縮小，跟對方原額：跟注比例=關\n"
+        "#    留空 = 用預設 0.8~0.99。\n"
+        "跟注比例=0.8-0.99"
     ),
 }
 
@@ -648,6 +684,14 @@ def main() -> int:
     # 餘額上傳用的帳號名：以啟動設定手動輸入為準（不用 OCR 讀名字，避免誤判）
     if settings.get("account_name"):
         engine.cfg.sheet.account_name = settings["account_name"]
+    # 跟注比例（擬真）：啟動設定可覆寫 config 的範圍，或關閉
+    fr = settings.get("follow_ratio")
+    if fr is False:
+        engine.cfg.betting.follow_ratio_enabled = False
+    elif isinstance(fr, tuple):
+        engine.cfg.betting.follow_ratio_enabled = True
+        engine.cfg.betting.follow_ratio_min = fr[0]
+        engine.cfg.betting.follow_ratio_max = fr[1]
     t = engine.cfg.timing
     mode = "LIVE（含下注）" if not engine.dry_run else "dry-run（開關統計+OCR，不下注）"
     room_mode = "換房巡房" if engine.cfg.room.mode == "patrol" else "掛房（單桌）"
@@ -657,6 +701,14 @@ def main() -> int:
     print(f"StarFollow v{_ver}")
     print("引擎啟動", mode, f"[{room_mode}]", f"({admin_tag})")
     print(f"記錄檔：{log_path}")
+    bset = engine.cfg.betting
+    if bset.follow_ratio_enabled and not (bset.follow_ratio_min >= 1.0 and bset.follow_ratio_max >= 1.0):
+        print(
+            f"跟注擬真：下注額 = 對方 × {bset.follow_ratio_min:.2f}~{bset.follow_ratio_max:.2f} 隨機，"
+            f"無條件進位到 {bset.follow_ratio_round_to}"
+        )
+    else:
+        print("跟注擬真：關閉（跟對方原額）")
     from star_follow.vision.ocr import warmup_ocr
 
     warmup_ocr()
