@@ -78,6 +78,17 @@ def _text_mask(img_bgr_or_rgb: np.ndarray) -> np.ndarray | None:
     m = float(gray.mean())
     thr = max(m + 25.0, 130.0)
     mask = (gray >= thr).astype(np.uint8) * 255
+    # 先「裁到文字外框」：不同來源的截圖（樣板 vs 實際表頭格）左右/上下留白不一樣，
+    # 直接比會因為文字佔比、位置不同而相關係數偏低（實測同一個名字只有 ~0.45）。
+    # 裁掉純背景邊界、只留文字方塊，再正規化高度，能讓同名分數大幅拉高、與別名分得開。
+    ys, xs = np.where(mask > 0)
+    if ys.size == 0:
+        return None
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    mask = mask[y0:y1, x0:x1]
+    if mask.shape[0] < 4 or mask.shape[1] < 4:
+        return None
     # 正規化高度，等比例縮放寬度（保留字數帶來的長寬比，利於區分不同名字）。
     h = mask.shape[0]
     if h != _NORM_H:
@@ -185,8 +196,18 @@ def match_name_column(
         return None, 0.0
     scored.sort(key=lambda x: x[0], reverse=True)
     best_s, best_idx = scored[0]
+    second = scored[1][0] if len(scored) > 1 else 0.0
     if best_s < threshold:
+        logger.info(
+            "影像比對「%s」最佳分數=%.2f（欄 %d，第二名 %.2f）< 門檻 %.2f → 未採用",
+            name, best_s, best_idx, second, threshold,
+        )
         return None, best_s
-    if len(scored) > 1 and scored[1][0] >= best_s - margin:
+    if second >= best_s - margin:
+        logger.info(
+            "影像比對「%s」最佳 %.2f 與第二名 %.2f 太接近（差 %.2f<%.2f）→ 不採用避免認錯",
+            name, best_s, second, best_s - second, margin,
+        )
         return None, best_s
+    logger.info("影像比對「%s」命中欄 %d 分數=%.2f（第二名 %.2f）", name, best_idx, best_s, second)
     return best_idx, best_s
