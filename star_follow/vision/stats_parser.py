@@ -19,6 +19,7 @@ from .ocr import (
     ocr_name_trace,
     paddle_available,
 )
+from . import name_match
 from .roi import scale_rect
 from .stats_table_roi import find_stats_table_in_panel
 
@@ -652,16 +653,40 @@ def resolve_follow_columns(
     #      多數桌的對象暱稱淺掃即可讀到 → 只花 ~一排的便宜 OCR，速度大幅提升。
     budget = getattr(cfg.vision, "header_ocr_budget_s", 8.0) or 8.0
     deadline = t0 + float(budget)
-    # 淺掃「不」設預算：整排每欄只跑最便宜的 legacy_s3（最多欄數次，本來就有上限），
-    # 這是真正會對到名字的一步（含 閃光福雷噓→閃光福雷嚏），絕不能被時間砍斷而漏讀。
     resolved: dict[str, int] = {}
-    cand_headers = read_column_header_cands(table, layout, deep=False)
-    for name, hint in follow_targets:
-        col = find_column_for_player_cands(cand_headers, name, hint=hint)
-        if col is not None:
-            resolved[name] = col
 
-    unresolved = [(n, h) for n, h in follow_targets if n not in resolved]
+    # 影像比對優先：有做樣板的暱稱（OCR 讀不準者）直接比「長相」找欄位，毫秒級且免疫
+    # OCR 認錯。對象會離桌又回來、座位會變，所以每局都在全欄重找（不靠固定欄位）。
+    cells = _header_cells(table, layout)
+    tmpl_resolved: dict[str, int] = {}
+    for name, _hint in follow_targets:
+        if name_match.has_template(name):
+            col, score = name_match.match_name_column(cells, name)
+            if col is not None:
+                resolved[name] = col
+                tmpl_resolved[name] = col
+    if tmpl_resolved:
+        _sp_logger.info("影像比對命中欄位：%s", tmpl_resolved)
+
+    # 只剩「沒樣板」的對象才動 OCR。有樣板者一律只靠影像比對：這幀沒比中就視為
+    # 本幀不在（下一幀再比），絕不退回 OCR——因為這些暱稱正是 OCR 讀不準的，硬跑
+    # 只會白白吃掉深掃時間預算又認錯。若所有對象都靠影像比對對到 → 完全不跑 OCR。
+    remaining = [
+        (n, h) for n, h in follow_targets if n not in resolved and not name_match.has_template(n)
+    ]
+    cand_headers: list[tuple[int, list[str]]] = []
+    if remaining:
+        # 淺掃「不」設預算：整排每欄只跑最便宜的 legacy_s3（最多欄數次，本來就有上限），
+        # 這是真正會對到名字的一步（含 閃光福雷噓→閃光福雷嚏），絕不能被時間砍斷而漏讀。
+        cand_headers = read_column_header_cands(table, layout, deep=False)
+        for name, hint in remaining:
+            col = find_column_for_player_cands(cand_headers, name, hint=hint)
+            if col is not None:
+                resolved[name] = col
+
+    unresolved = [
+        (n, h) for n, h in follow_targets if n not in resolved and not name_match.has_template(n)
+    ]
     # 只有「白字深掃補救」才受時間預算限制——它會對每個讀空的欄跑滿 7 步前處理，
     # 是慢機器暴衝到 20s+ 的元凶。超時就放棄補救（對象沒對到會走防踢路徑，下一局再試），
     # 但不影響上面淺掃已經對到的對象。
@@ -730,9 +755,16 @@ def verify_follow_columns(
     else:
         header = table[: max(20, int(table.shape[0] * 0.12)), :]
     _, cols = _columns_for(table, layout)
+    cells = _header_cells(table, layout)
 
     resolved: dict[str, int] = {}
     for name, col in verify:
+        # 有樣板的暱稱：用影像比對在全欄找（座位變了也找得到，免 OCR）。
+        if name_match.has_template(name):
+            mcol, _score = name_match.match_name_column(cells, name)
+            if mcol is not None:
+                resolved[name] = mcol
+            continue
         if col is None or col < 0 or col >= len(cols):
             continue
         x0, x1 = cols[col]
@@ -785,20 +817,36 @@ def parse_stats_table(
             for name, col in known_columns.items():
                 bets_by_column[col] = _parse_single_column(table, col, rows, layout)
         else:
-            col_traces: list[dict] = []
-            cand_headers = read_column_header_cands(
-                table, layout, traces_out=col_traces
-            )
-            headers = [(idx, _pick_consensus(c)) for idx, c in cand_headers]
-            players = [n for _, n in headers if n]
             bets_by_column = {}
             resolved = {}
-            for name, hint in follow_targets:
-                col = find_column_for_player_cands(cand_headers, name, hint=hint)
-                if col is None:
-                    continue
-                resolved[name] = col
-                bets_by_column[col] = _parse_single_column(table, col, rows, layout)
+            # 影像比對優先：有樣板的暱稱直接比長相找欄位（免 OCR）。
+            tmpl_cells = _header_cells(table, layout)
+            for name, _hint in follow_targets:
+                if name_match.has_template(name):
+                    mcol, _s = name_match.match_name_column(tmpl_cells, name)
+                    if mcol is not None:
+                        resolved[name] = mcol
+                        bets_by_column[mcol] = _parse_single_column(table, mcol, rows, layout)
+            # 有樣板者只靠影像比對，沒比中就當本幀不在，不退回 OCR（這些暱稱 OCR 本就讀不準）。
+            remaining = [
+                (n, h) for n, h in follow_targets if n not in resolved and not name_match.has_template(n)
+            ]
+            col_traces: list[dict] = []
+            if remaining:
+                cand_headers = read_column_header_cands(
+                    table, layout, traces_out=col_traces
+                )
+                headers = [(idx, _pick_consensus(c)) for idx, c in cand_headers]
+                players = [n for _, n in headers if n]
+                for name, hint in remaining:
+                    col = find_column_for_player_cands(cand_headers, name, hint=hint)
+                    if col is None:
+                        continue
+                    resolved[name] = col
+                    bets_by_column[col] = _parse_single_column(table, col, rows, layout)
+            else:
+                headers = []
+                players = []
             if not resolved and follow_targets:
                 band = layout.get("header_band", [0.0, 0.0, 1.0, 0.12])
                 if isinstance(band, list) and len(band) == 4:

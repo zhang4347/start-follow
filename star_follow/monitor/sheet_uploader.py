@@ -54,6 +54,12 @@ class UploadGate:
         try:
             if not getattr(e, "_at_table_stable", False):
                 return False
+            room = getattr(getattr(e, "cfg", None), "room", None)
+            mode = getattr(room, "mode", "") if room is not None else ""
+            if mode == "patrol":
+                # 巡防沒有 IDLE/LOCKED 階段；由引擎只在「下注後等開牌」這類安全空檔
+                # 把 _at_table_stable 設 True（那時只讀倒數、不做統計表 OCR，不搶資源）。
+                return True
             phase = getattr(e, "phase", None)
             name = getattr(phase, "name", "")
             return name in self._IDLE_PHASES

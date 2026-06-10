@@ -116,6 +116,23 @@ def templates_dir() -> Path:
     return _PKG_DIR / "vision" / "templates"
 
 
+def name_templates_dir() -> Path:
+    """玩家暱稱「影像比對」樣板所在資料夾（含 index.json + 圖檔）。
+
+    優先用 exe 旁可編輯的 data/name_templates（業主日後可自行新增）；
+    沒有就用打包內建的 name_templates（開發時放在 star_follow/data/name_templates）。
+    用於那些 OCR 讀不準的暱稱：比對「長相」而非辨識文字，又快又免疫認錯。
+    """
+    user = app_dir() / "data" / "name_templates"
+    if (user / "index.json").is_file():
+        return user
+    if is_frozen():
+        p = resource_dir() / "name_templates"
+        if p.is_dir():
+            return p
+    return _PKG_DIR / "data" / "name_templates"
+
+
 def _is_ascii(p: Path) -> bool:
     return all(ord(c) < 128 for c in str(p))
 

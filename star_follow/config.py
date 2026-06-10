@@ -122,6 +122,10 @@ class RoomConfig:
     stay_on_absent: str = "keep"
     # 舊設定（相容用）：對象全離桌→停止程式。僅在未設定 stay_on_absent 時生效。
     stay_stop_when_targets_absent: bool = True
+    # 影像辨識「綁房間」：{暱稱: [桌號,...]}。只在指定桌號才用影像樣板找這個名字，
+    # 其餘房間完全不找它（不比對也不 OCR）。用於 OCR 讀不準、且固定待在某桌的對象，
+    # 可大幅降低「在別桌誤把路人比中而跟錯人」的風險。空 = 不綁（有樣板就每桌都比對）。
+    name_template_rooms: dict[str, list[int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -144,6 +148,11 @@ class BettingConfig:
     follow_ratio_min: float = 0.8
     follow_ratio_max: float = 0.99
     follow_ratio_round_to: int = 1000
+    # 風控：對象「單一下注區」金額超過此上限就不跟（防對方爆量單／最後一秒收回的髒招）。
+    # 以對象實際下注額判斷（在我方比例縮放之前）。0 = 不限制。
+    max_follow_bet: int = 200000
+    # 風控：本局「總跟注額」超過此上限就整局不跟。0 = 不限制。
+    max_round_stake: int = 0
 
 
 # 內建 Telegram 通知預設：放在「程式碼」裡，才會被打包進 exe，並隨自動更新送到
@@ -234,6 +243,30 @@ def _resolve_stay_on_absent(rm: dict[str, Any]) -> str:
     if bool(rm.get("stay_stop_when_targets_absent", True)):
         return "stop"
     return "pause"
+
+
+def _parse_name_template_rooms(raw: Any) -> dict[str, list[int]]:
+    """把 name_template_rooms 設定正規化成 {暱稱: [桌號,...]}。
+
+    接受 YAML 的 {名字: [15, 16]} 或 {名字: 15}；非數字桌號會被忽略。空 → {}。
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, list[int]] = {}
+    for name, rooms in raw.items():
+        key = str(name).strip()
+        if not key:
+            continue
+        seq = rooms if isinstance(rooms, (list, tuple)) else [rooms]
+        nums: list[int] = []
+        for r in seq:
+            try:
+                nums.append(int(str(r).strip()))
+            except (TypeError, ValueError):
+                continue
+        if nums:
+            out[key] = nums
+    return out
 
 
 def load_config(path: Path | str | None = None) -> AppConfig:
@@ -334,6 +367,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
             stay_absent_rounds_to_pause=int(rm.get("stay_absent_rounds_to_pause", 1)),
             stay_stop_when_targets_absent=bool(rm.get("stay_stop_when_targets_absent", True)),
             stay_on_absent=_resolve_stay_on_absent(rm),
+            name_template_rooms=_parse_name_template_rooms(rm.get("name_template_rooms")),
         ),
         betting=BettingConfig(
             follow_exclude=[str(x) for x in (bt.get("follow_exclude") or ["莊", "閒"])],
@@ -346,6 +380,8 @@ def load_config(path: Path | str | None = None) -> AppConfig:
             follow_ratio_min=float(bt.get("follow_ratio_min", 0.8)),
             follow_ratio_max=float(bt.get("follow_ratio_max", 0.99)),
             follow_ratio_round_to=int(bt.get("follow_ratio_round_to", 1000)),
+            max_follow_bet=int(bt.get("max_follow_bet", 200000)),
+            max_round_stake=int(bt.get("max_round_stake", 0)),
         ),
         telegram=TelegramConfig(
             enabled=bool(tg.get("enabled", False)),
@@ -467,6 +503,7 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
         "stay_absent_rounds_to_pause": cfg.room.stay_absent_rounds_to_pause,
         "stay_stop_when_targets_absent": cfg.room.stay_stop_when_targets_absent,
         "stay_on_absent": cfg.room.stay_on_absent,
+        "name_template_rooms": cfg.room.name_template_rooms,
     }
     data["betting"] = {
         "follow_exclude": cfg.betting.follow_exclude,
@@ -479,6 +516,8 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
         "follow_ratio_min": cfg.betting.follow_ratio_min,
         "follow_ratio_max": cfg.betting.follow_ratio_max,
         "follow_ratio_round_to": cfg.betting.follow_ratio_round_to,
+        "max_follow_bet": cfg.betting.max_follow_bet,
+        "max_round_stake": cfg.betting.max_round_stake,
     }
     data["telegram"] = {
         "enabled": cfg.telegram.enabled,

@@ -80,6 +80,11 @@ room:
   stay_absent_rounds_to_pause: 2
   stay_stop_when_targets_absent: true
   stay_on_absent: keep
+  # 影像辨識「綁房間」：{暱稱: [桌號,...]}。只在指定桌才用影像樣板找該名字，其餘桌不找
+  # （避免在別桌把路人誤比中跟錯人，也更快）。可由「啟動設定.txt → 影像辨識房間」覆寫。
+  name_template_rooms:
+    閃光福雷噓: [15]
+    三下治灸: [14]
 betting:
   follow_exclude:
   - 莊
@@ -93,6 +98,8 @@ betting:
   follow_ratio_min: 0.8
   follow_ratio_max: 0.99
   follow_ratio_round_to: 1000
+  max_follow_bet: 200000
+  max_round_stake: 0
 telegram:
   enabled: false
   bot_token: 8893028334:AAGNJQt5djgMjjmCswxfwTUdh2h7VdvoXMM

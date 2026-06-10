@@ -80,6 +80,8 @@ def _read_launch_settings() -> dict:
         "stay_targets": [],
         "account_name": None,
         "follow_ratio": None,  # (lo, hi) 比例範圍；False=關閉(跟原額)；None=不指定(用 config 預設)
+        "max_follow_bet": None,  # 單注上限；0=不限；None=不指定(用 config 預設)
+        "name_template_rooms": {},  # {暱稱: [桌號,...]} 影像辨識綁房間；空=不指定
     }
     p = paths.launch_settings_path()
     if not p.is_file():
@@ -143,7 +145,53 @@ def _read_launch_settings() -> dict:
                 out["account_name"] = val
         elif any(k in key for k in ("跟注比例", "下注比例", "比例", "ratio")):
             out["follow_ratio"] = _parse_ratio_setting(val)
+        elif any(k in key for k in ("單注上限", "单注上限", "最大跟注", "max_bet", "maxbet")):
+            out["max_follow_bet"] = _parse_amount_setting(val)
+        elif any(k in key for k in ("影像辨識房間", "圖像辨識房間", "影像房間", "影像辨識", "template_room")):
+            # 註：上面已把全形/半形冒號都換成「=」，故 val 內名字與桌號是用「=」相連，
+            #     例如原填「閃光福雷噓:15、三下治灸:20」→ val 變「閃光福雷噓=15、三下治灸=20」。
+            out["name_template_rooms"].update(_parse_template_rooms_setting(val))
     return out
+
+
+def _parse_template_rooms_setting(val: str) -> dict[str, list[int]]:
+    """解析『影像辨識房間』：把『暱稱=桌號』用逗號/頓號分隔的清單轉成 {暱稱: [桌號,...]}。
+
+    桌號可填多個（用斜線/加號等任意非數字分隔），例：閃光福雷噓=15。讀不到回空 dict。
+    """
+    import re as _re
+
+    out: dict[str, list[int]] = {}
+    for part in _re.split(r"[,，、;；]+", val):
+        part = part.strip()
+        if "=" not in part:
+            continue
+        name, rooms = part.split("=", 1)
+        name = name.strip()
+        nums = [int(x) for x in _re.findall(r"\d+", rooms)]
+        if name and nums:
+            out.setdefault(name, []).extend(nums)
+    return out
+
+
+def _parse_amount_setting(val: str):
+    """解析金額設定：支援『20萬』『200000』『20w』，或『關/0/不限』代表不限制。
+    讀不懂回 None（沿用 config 預設）。
+    """
+    import re as _re
+
+    v = val.strip().lower()
+    if not v:
+        return None
+    if any(x in v for x in ("關", "閉", "off", "no", "false", "不限", "無上限")):
+        return 0
+    m = _re.search(r"\d+(?:\.\d+)?", v)
+    if not m:
+        return None
+    num = float(m.group())
+    if any(u in v for u in ("萬", "万", "w")):
+        num *= 10000
+    return int(round(num))
 
 
 def _parse_ratio_setting(val: str):
@@ -182,6 +230,8 @@ _LAUNCH_OPTION_KEYS: dict[str, tuple[str, ...]] = {
     "桌號": ("桌號", "桌号", "桌", "table"),
     "對象": ("對象", "对象", "跟注對象", "target"),
     "跟注比例": ("跟注比例", "下注比例", "比例", "ratio"),
+    "單注上限": ("單注上限", "单注上限", "最大跟注", "max_bet", "maxbet"),
+    "影像辨識房間": ("影像辨識房間", "圖像辨識房間", "影像房間", "影像辨識", "template_room"),
 }
 _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
     "帳號": (
@@ -212,6 +262,21 @@ _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
         "#    填『關』 = 不縮小，跟對方原額：跟注比例=關\n"
         "#    留空 = 用預設 0.8~0.99。\n"
         "跟注比例=0.8-0.99"
+    ),
+    "單注上限": (
+        "# 【單注上限】風控：對象在『單一下注區』下超過這個金額就不跟（防對方爆量單／\n"
+        "#    最後一秒收回的髒招）。以對象實際下注額判斷。\n"
+        "#    例：單注上限=20萬  或  單注上限=200000\n"
+        "#    填『不限』或 0 = 不限制。留空 = 用預設 20 萬。\n"
+        "單注上限=20萬"
+    ),
+    "影像辨識房間": (
+        "# 【影像辨識房間】少數暱稱（藝術字/反白）OCR 怎麼加強都讀不準，改用『比對長相』找。\n"
+        "#    這裡指定這些名字固定待在哪一桌 → 程式只會在那一桌用影像比對找它，其餘房間\n"
+        "#    完全不找（避免在別桌把長相相近的路人誤比中而跟錯人），也更快。\n"
+        "#    格式：暱稱:桌號，多個用「、」或逗號分隔。例：影像辨識房間=閃光福雷噓:15、三下治灸:14\n"
+        "#    留空 = 用內建預設（閃光福雷噓→No.15、三下治灸→No.14）。\n"
+        "影像辨識房間="
     ),
 }
 
@@ -692,6 +757,15 @@ def main() -> int:
         engine.cfg.betting.follow_ratio_enabled = True
         engine.cfg.betting.follow_ratio_min = fr[0]
         engine.cfg.betting.follow_ratio_max = fr[1]
+    # 風控：單注上限（對象單一下注區超過就不跟）
+    mb = settings.get("max_follow_bet")
+    if mb is not None:
+        engine.cfg.betting.max_follow_bet = int(mb)
+    # 影像辨識綁房間：覆寫 config，並重建引擎對照表（只在指定桌才找這些名字）
+    ntr = settings.get("name_template_rooms")
+    if ntr:
+        engine.cfg.room.name_template_rooms = dict(ntr)
+        engine.reload_template_room_binding()
     t = engine.cfg.timing
     mode = "LIVE（含下注）" if not engine.dry_run else "dry-run（開關統計+OCR，不下注）"
     room_mode = "換房巡房" if engine.cfg.room.mode == "patrol" else "掛房（單桌）"
@@ -709,6 +783,13 @@ def main() -> int:
         )
     else:
         print("跟注擬真：關閉（跟對方原額）")
+    if bset.max_follow_bet:
+        print(f"風控：對象單注 > {bset.max_follow_bet:,} 不跟")
+    if bset.max_round_stake:
+        print(f"風控：本局總跟注 > {bset.max_round_stake:,} 整局不跟")
+    if engine.cfg.room.name_template_rooms:
+        binds = "、".join(f"{n}→No.{'/'.join(map(str, r))}" for n, r in engine.cfg.room.name_template_rooms.items())
+        print(f"影像辨識綁房間：{binds}（只在這些桌用樣板找這些名字，其餘桌不找）")
     from star_follow.vision.ocr import warmup_ocr
 
     warmup_ocr()

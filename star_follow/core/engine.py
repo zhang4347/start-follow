@@ -128,6 +128,10 @@ class FollowEngine:
         self._patrol_current: int | None = None
         self._patrol_visited: set[int] = set()
         self._last_patrol_wait_log_mono = 0.0
+        self._last_patrol_upload_window_mono = 0.0
+        # 影像辨識綁房間：{正規化暱稱: {桌號,...}}（只在這些桌才找該名字）。
+        self._tmpl_room_binding: dict[str, set[int]] = {}
+        self.reload_template_room_binding()
 
     def _find_game(self):
         wcfg = self.cfg.window
@@ -692,8 +696,44 @@ class FollowEngine:
             if col is not None:
                 entry.column_index = col
 
+    def reload_template_room_binding(self) -> None:
+        """依目前 cfg.room.name_template_rooms 重建「影像辨識綁房間」對照表。
+        啟動設定覆寫 cfg 後需呼叫一次，讓綁定生效。"""
+        from star_follow.vision import name_match as _nm
+        self._tmpl_room_binding = {
+            _nm._norm_name(k): set(v)
+            for k, v in (self.cfg.room.name_template_rooms or {}).items()
+            if _nm._norm_name(k) and v
+        }
+        if self._tmpl_room_binding:
+            logger.info("影像辨識綁房間：%s", self.cfg.room.name_template_rooms)
+
+    def _current_room(self) -> int | None:
+        """目前所在桌號：巡防用即時桌號，掛房用固定桌號（0/未知 → None）。"""
+        if self.cfg.room.mode == "patrol":
+            return self._patrol_current
+        return self.cfg.room.stay_table or None
+
+    def _room_allows_name(self, name: str) -> bool:
+        """影像辨識綁房間：名字若綁了桌號，只有在那些桌才找它（其餘桌完全不找，
+        避免在別桌把路人誤比中而跟錯人）。沒綁定、或讀不到目前桌號 → 照常找。"""
+        if not self._tmpl_room_binding:
+            return True
+        from star_follow.vision import name_match as _nm
+        rooms = self._tmpl_room_binding.get(_nm._norm_name(name))
+        if not rooms:
+            return True
+        cur = self._current_room()
+        if cur is None:
+            return True
+        return cur in rooms
+
+    def _active_targets(self) -> list:
+        """目前該找的追蹤對象（已套用影像辨識綁房間過濾）。"""
+        return [e for e in self.follow.active_entries() if self._room_allows_name(e.name)]
+
     def _resolve_columns(self, frame) -> None:
-        entries = self.follow.active_entries()
+        entries = self._active_targets()
         names = [e.name for e in entries]
         # 跨局快取：上一局已找到全部對象 → 這局只驗證那幾欄表頭名字（單欄 OCR，快），
         # 全部相符就沿用，省掉整排中文表頭 OCR（最大宗的慢動作）。
@@ -724,7 +764,7 @@ class FollowEngine:
         include_scroll: bool = False,
         ocr_t: int | None = None,
     ) -> dict[str, int]:
-        entries = self.follow.active_entries()
+        entries = self._active_targets()
         targets = [(e.name, e.column_index) for e in entries]
         known = self.ctx.resolved_columns if refresh_only else None
         bottom = self._bottom_read_enabled()
@@ -791,6 +831,7 @@ class FollowEngine:
         # 只下莊/閒。
         self.ctx.last_raw_bet_areas = {area for area, amt in plan.items() if amt > 0}
         plan = self._filter_follow_plan(plan)
+        plan = self._risk_filter_plan(plan)
         plan = self._scale_follow_plan(plan)
         return cap_plan(plan, self.cfg.chip_values)
 
@@ -809,6 +850,28 @@ class FollowEngine:
                     logger.info("不跟 %s（莊/閒一律不跟），略過 %d", area, amount)
                 continue
             out[area] = amount
+        return out
+
+    def _risk_filter_plan(self, plan: dict[str, int]) -> dict[str, int]:
+        """風控過濾（以對象實際下注額判斷，在比例縮放之前）：
+        - 單一下注區金額 > max_follow_bet → 丟掉該注（防對方爆量單／最後一秒收回的髒招）。
+        - 本局總跟注額 > max_round_stake → 整局不跟。
+        0 代表該項不限制。
+        """
+        bcfg = self.cfg.betting
+        cap = getattr(bcfg, "max_follow_bet", 0) or 0
+        out: dict[str, int] = {}
+        for area, amount in plan.items():
+            if cap and amount > cap:
+                logger.warning("風控：%s 單注 %d 超過上限 %d → 不跟", area, amount, cap)
+                continue
+            out[area] = amount
+        round_cap = getattr(bcfg, "max_round_stake", 0) or 0
+        if round_cap:
+            total = sum(v for v in out.values() if v > 0)
+            if total > round_cap:
+                logger.warning("風控：本局總跟注 %d 超過單局上限 %d → 整局不跟", total, round_cap)
+                return {}
         return out
 
     def _scale_follow_plan(self, plan: dict[str, int]) -> dict[str, int]:
@@ -1784,7 +1847,9 @@ class FollowEngine:
         self._position_stats_for_read()
         self.ctx = RoundContext()
         frame = capture_client(win)
-        plan = self._build_plan(frame, refresh_only=False, include_scroll=True)
+        # 進桌的「有沒有對象」初判只需要表頭欄位，不需要金額/最後一列 → include_scroll=False，
+        # 省掉一次往下捲表＋截圖（這裡回傳的 plan 並不會被採用，真正定稿在下注窗口才做）。
+        plan = self._build_plan(frame, refresh_only=False, include_scroll=False)
         present = bool(self.ctx.resolved_columns)
         self.ctx.plan = plan
         self.ctx.ocr_done = True
@@ -1931,16 +1996,17 @@ class FollowEngine:
             if result == "timeout":
                 logger.info("No.%s 等下注窗口逾時，換下一桌", cur)
                 return "switch"
-            if result == "main_only":
-                # 對象只下莊/閒（不是我們要跟的）→ 立刻換桌，不黏、不容忍。
-                logger.info("No.%s 對象只下莊/閒，不跟，換下一桌", cur)
-                return "switch"
-            # absent / no_bet：對象可能只是這局沒下邊注，或 OCR 暫時漏讀。
-            # 不要一次就走——連續達門檻才換桌，避免對象還在下卻被提早放掉。
+            # main_only（對象只下莊/閒）/ absent / no_bet：本局都「沒跟到」。
+            # 莊/閒不算下注，故與 no_bet 一視同仁——算進「等兩局」的容忍，連續達門檻
+            # 才換桌（避免對象只是這局下莊/閒、下局又下我們要跟的邊注卻被提早放掉）。
             idle += 1
             logger.info(
-                "No.%s 本局沒跟到（%s），連續 %d/%d 局",
-                cur, result, idle, leave_after,
+                "No.%s 本局沒跟到（%s%s），連續 %d/%d 局",
+                cur,
+                result,
+                "：只下莊/閒" if result == "main_only" else "",
+                idle,
+                leave_after,
             )
             if idle >= leave_after:
                 logger.info("No.%s 連續 %d 局沒得跟，換下一桌", cur, idle)
@@ -1958,19 +2024,48 @@ class FollowEngine:
         deadline = time.monotonic() + rcfg.result_wait_timeout_s
         saw_non_green = False  # 是否已看到本局下注結束（進入開牌）
         last_log = 0.0
-        while time.monotonic() < deadline and self._running:
-            t, color = self._effective_t(self._read_cd(capture_client(win)))
-            if color != CountdownColor.GREEN:
-                saw_non_green = True
-            elif saw_non_green and t is not None and t >= rcfg.min_enter_t:
-                logger.info("本局已開完牌（新下注窗口 T=%s）", t)
-                return
-            now = time.monotonic()
-            if now - last_log >= 10.0:
-                logger.info("等開牌中…（T=%s %s）", t, color.name)
-                last_log = now
-            time.sleep(0.5)
-        logger.warning("等開牌逾時（%.0fs），仍換下一桌", rcfg.result_wait_timeout_s)
+        # 安全空檔：此段只讀倒數、不做統計表 OCR，且穩定在桌（餘額可見）→ 放行餘額上傳。
+        self._at_table_stable = True
+        try:
+            while time.monotonic() < deadline and self._running:
+                t, color = self._effective_t(self._read_cd(capture_client(win)))
+                if color != CountdownColor.GREEN:
+                    saw_non_green = True
+                elif saw_non_green and t is not None and t >= rcfg.min_enter_t:
+                    logger.info("本局已開完牌（新下注窗口 T=%s）", t)
+                    return
+                now = time.monotonic()
+                if now - last_log >= 10.0:
+                    logger.info("等開牌中…（T=%s %s）", t, color.name)
+                    last_log = now
+                time.sleep(0.5)
+            logger.warning("等開牌逾時（%.0fs），仍換下一桌", rcfg.result_wait_timeout_s)
+        finally:
+            self._at_table_stable = False
+
+    # 巡防純換房（長時間找不到對象、都沒下注）時，wait_round_end 那種空檔不會出現，
+    # 整點餘額上傳會一直等不到 gate。故每隔這麼久、在桌且非開表中，主動讓出一個短空檔。
+    _PATROL_UPLOAD_WINDOW_GAP_S = 300.0
+    _PATROL_UPLOAD_WINDOW_S = 1.5
+
+    def _patrol_offer_upload_window(self) -> None:
+        """換房之間在桌、未開表時，定期讓出一個短空檔給背景餘額上傳（不影響下注窗口：
+        此時尚未開統計表，僅延後本桌的『有沒有對象』初判 ~1.5s）。"""
+        if not self.cfg.sheet.enabled:
+            return
+        now = time.monotonic()
+        if now - self._last_patrol_upload_window_mono < self._PATROL_UPLOAD_WINDOW_GAP_S:
+            return
+        self._last_patrol_upload_window_mono = now
+        self._at_table_stable = True
+        try:
+            # 上傳執行緒每秒輪詢 gate；給它能抓到的短空檔，之後立即恢復忙碌。
+            for _ in range(int(self._PATROL_UPLOAD_WINDOW_S / 0.25)):
+                if not self._running:
+                    break
+                time.sleep(0.25)
+        finally:
+            self._at_table_stable = False
 
     def run_patrol_once(self) -> bool:
         win = self._find_game()
@@ -1982,6 +2077,9 @@ class FollowEngine:
             self._win = None
             return False
         self._win = win
+        # 巡防預設「忙碌」：開表/讀統計/換桌期間都不放行餘額上傳，避免搶 OCR/CPU。
+        # 只有在「下注後等開牌」這種安全空檔才會放行（見 _patrol_wait_round_end）。
+        self._at_table_stable = False
         frame = capture_client(win)
 
         from star_follow.automation import lobby_nav
@@ -2014,6 +2112,9 @@ class FollowEngine:
             logger.warning("尚未進入牌桌（無桌號），執行大廳導覽…")
             lobby_nav.return_to_baccarat_table(win, self.cfg, cap)
             return True
+
+        # 開表前（在桌、未做統計 OCR）讓出一個整點餘額上傳的安全空檔（已節流，多數時候直接跳過）。
+        self._patrol_offer_upload_window()
 
         # 不管現在能不能下注，先開統計表看本桌有沒有追蹤對象：
         #   有 → 黏桌持續跟注，到對象某局沒下邊注才換桌（在 _patrol_visit_table 內處理）
