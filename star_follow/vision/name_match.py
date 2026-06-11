@@ -25,8 +25,20 @@ from star_follow import paths
 logger = logging.getLogger(__name__)
 
 # TM_CCOEFF_NORMED 分數門檻與「領先第二名」的最小差距（沿用名字比對的精準優先精神）。
-_MATCH_THRESHOLD = 0.62
-_MATCH_MARGIN = 0.08
+# 可由設定檔覆寫（config.yaml / 啟動設定.txt → set_match_params）。樣板與實機渲染有差
+# 時可調低門檻；若出現跟錯人就調高。
+_MATCH_THRESHOLD = 0.55
+_MATCH_MARGIN = 0.04
+
+
+def set_match_params(threshold: float | None = None, margin: float | None = None) -> None:
+    """以設定檔的值覆寫影像比對門檻／領先差（啟動時呼叫一次）。"""
+    global _MATCH_THRESHOLD, _MATCH_MARGIN
+    if threshold is not None:
+        _MATCH_THRESHOLD = float(threshold)
+    if margin is not None:
+        _MATCH_MARGIN = float(margin)
+    logger.info("影像比對門檻=%.2f 領先差=%.2f", _MATCH_THRESHOLD, _MATCH_MARGIN)
 # 比對前統一縮放到的高度（樣板與各欄表頭都先正規化到同一高度，吸收些微縮放差異）。
 _NORM_H = 40
 
@@ -174,14 +186,17 @@ def match_name_column(
     header_cells: list[tuple[int, np.ndarray]],
     name: str,
     *,
-    threshold: float = _MATCH_THRESHOLD,
-    margin: float = _MATCH_MARGIN,
+    threshold: float | None = None,
+    margin: float | None = None,
 ) -> tuple[int | None, float]:
     """在各欄表頭裡用樣板找出 `name` 的欄位索引。
 
     回傳 (欄位索引或 None, 最佳分數)。比照名字比對的精準優先：最佳分數需達門檻，
     且明顯勝過第二名才採用（避免比到長相相近的路人）。沒有該名字的樣板 → (None, 0)。
+    threshold/margin 留空時用模組目前值（可由 set_match_params 從設定檔覆寫）。
     """
+    threshold = _MATCH_THRESHOLD if threshold is None else threshold
+    margin = _MATCH_MARGIN if margin is None else margin
     templates = load_name_templates()
     tpl = templates.get(_norm_name(name))
     if tpl is None:

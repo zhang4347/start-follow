@@ -126,6 +126,11 @@ class RoomConfig:
     # 其餘房間完全不找它（不比對也不 OCR）。用於 OCR 讀不準、且固定待在某桌的對象，
     # 可大幅降低「在別桌誤把路人比中而跟錯人」的風險。空 = 不綁（有樣板就每桌都比對）。
     name_template_rooms: dict[str, list[int]] = field(default_factory=dict)
+    # 影像比對採用門檻：最佳相關分數需 >= 此值才視為命中（0~1，越高越嚴）。
+    # 第二門檻 name_match_margin：最佳須領先第二名超過此差距，避免比到長相相近的路人。
+    # 分數偏低（樣板與實機渲染有差）時可調低；若出現「跟錯人」就調高。
+    name_match_threshold: float = 0.55
+    name_match_margin: float = 0.04
 
 
 @dataclass
@@ -368,6 +373,8 @@ def load_config(path: Path | str | None = None) -> AppConfig:
             stay_stop_when_targets_absent=bool(rm.get("stay_stop_when_targets_absent", True)),
             stay_on_absent=_resolve_stay_on_absent(rm),
             name_template_rooms=_parse_name_template_rooms(rm.get("name_template_rooms")),
+            name_match_threshold=float(rm.get("name_match_threshold", 0.55)),
+            name_match_margin=float(rm.get("name_match_margin", 0.04)),
         ),
         betting=BettingConfig(
             follow_exclude=[str(x) for x in (bt.get("follow_exclude") or ["莊", "閒"])],
@@ -504,6 +511,8 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
         "stay_stop_when_targets_absent": cfg.room.stay_stop_when_targets_absent,
         "stay_on_absent": cfg.room.stay_on_absent,
         "name_template_rooms": cfg.room.name_template_rooms,
+        "name_match_threshold": cfg.room.name_match_threshold,
+        "name_match_margin": cfg.room.name_match_margin,
     }
     data["betting"] = {
         "follow_exclude": cfg.betting.follow_exclude,

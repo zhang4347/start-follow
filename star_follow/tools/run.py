@@ -82,6 +82,8 @@ def _read_launch_settings() -> dict:
         "follow_ratio": None,  # (lo, hi) 比例範圍；False=關閉(跟原額)；None=不指定(用 config 預設)
         "max_follow_bet": None,  # 單注上限；0=不限；None=不指定(用 config 預設)
         "name_template_rooms": {},  # {暱稱: [桌號,...]} 影像辨識綁房間；空=不指定
+        "name_match_threshold": None,  # 影像比對採用門檻；None=不指定(用 config 預設)
+        "name_match_margin": None,  # 影像比對領先第二名最小差距；None=不指定
     }
     p = paths.launch_settings_path()
     if not p.is_file():
@@ -147,6 +149,10 @@ def _read_launch_settings() -> dict:
             out["follow_ratio"] = _parse_ratio_setting(val)
         elif any(k in key for k in ("單注上限", "单注上限", "最大跟注", "max_bet", "maxbet")):
             out["max_follow_bet"] = _parse_amount_setting(val)
+        elif any(k in key for k in ("比對門檻", "影像門檻", "match_threshold")):
+            out["name_match_threshold"] = _parse_float_setting(val)
+        elif any(k in key for k in ("領先差", "比對領先", "match_margin")):
+            out["name_match_margin"] = _parse_float_setting(val)
         elif any(k in key for k in ("影像辨識房間", "圖像辨識房間", "影像房間", "影像辨識", "template_room")):
             # 註：上面已把全形/半形冒號都換成「=」，故 val 內名字與桌號是用「=」相連，
             #     例如原填「閃光福雷噓:15、三下治灸:20」→ val 變「閃光福雷噓=15、三下治灸=20」。
@@ -194,6 +200,22 @@ def _parse_amount_setting(val: str):
     return int(round(num))
 
 
+def _parse_float_setting(val: str):
+    """解析一個 0~1 的小數（影像比對門檻/領先差）。讀不懂或超範圍回 None（沿用 config 預設）。"""
+    import re as _re
+
+    m = _re.search(r"\d+(?:\.\d+)?", val.strip())
+    if not m:
+        return None
+    try:
+        num = float(m.group())
+    except ValueError:
+        return None
+    if 0.0 <= num <= 1.0:
+        return num
+    return None
+
+
 def _parse_ratio_setting(val: str):
     """解析『跟注比例』：可填範圍 0.8-0.99 / 0.8~0.99，或單一值 0.9（固定比例），
     或填 關/off/100% 代表不縮小（跟對方原額）。讀不懂回 None（沿用 config 預設）。
@@ -232,6 +254,8 @@ _LAUNCH_OPTION_KEYS: dict[str, tuple[str, ...]] = {
     "跟注比例": ("跟注比例", "下注比例", "比例", "ratio"),
     "單注上限": ("單注上限", "单注上限", "最大跟注", "max_bet", "maxbet"),
     "影像辨識房間": ("影像辨識房間", "圖像辨識房間", "影像房間", "影像辨識", "template_room"),
+    "影像比對門檻": ("影像比對門檻", "比對門檻", "影像門檻", "match_threshold"),
+    "影像比對領先差": ("影像比對領先差", "領先差", "比對領先", "match_margin"),
 }
 _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
     "帳號": (
@@ -277,6 +301,17 @@ _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
         "#    格式：暱稱:桌號，多個用「、」或逗號分隔。例：影像辨識房間=閃光福雷噓:15、三下治灸:14\n"
         "#    留空 = 用內建預設（閃光福雷噓→No.15、三下治灸→No.14）。\n"
         "影像辨識房間="
+    ),
+    "影像比對門檻": (
+        "# 【影像比對門檻】影像比對的「採用分數」。比對分數要 ≥ 這個值才算找到（0~1，越高越嚴）。\n"
+        "#    若樣板分數常常差一點點比不中（log 顯示『最佳分數=0.59 < 門檻』）→ 調低一點。\n"
+        "#    若出現『跟錯人』→ 調高。留空 = 用預設 0.55。例：影像比對門檻=0.55\n"
+        "影像比對門檻=0.55"
+    ),
+    "影像比對領先差": (
+        "# 【影像比對領先差】最佳分數要「領先第二名」超過這個差距才採用（避免兩個長相相近的\n"
+        "#    名字分不清而跟錯人）。分數很接近時調低、容易跟錯時調高。留空 = 用預設 0.04。\n"
+        "影像比對領先差=0.04"
     ),
 }
 
@@ -766,6 +801,15 @@ def main() -> int:
     if ntr:
         engine.cfg.room.name_template_rooms = dict(ntr)
         engine.reload_template_room_binding()
+    # 影像比對門檻 / 領先差：啟動設定覆寫 config，再套進比對模組
+    nmt = settings.get("name_match_threshold")
+    if nmt is not None:
+        engine.cfg.room.name_match_threshold = float(nmt)
+    nmm = settings.get("name_match_margin")
+    if nmm is not None:
+        engine.cfg.room.name_match_margin = float(nmm)
+    from star_follow.vision import name_match as _nm
+    _nm.set_match_params(engine.cfg.room.name_match_threshold, engine.cfg.room.name_match_margin)
     t = engine.cfg.timing
     mode = "LIVE（含下注）" if not engine.dry_run else "dry-run（開關統計+OCR，不下注）"
     room_mode = "換房巡房" if engine.cfg.room.mode == "patrol" else "掛房（單桌）"
@@ -790,6 +834,7 @@ def main() -> int:
     if engine.cfg.room.name_template_rooms:
         binds = "、".join(f"{n}→No.{'/'.join(map(str, r))}" for n, r in engine.cfg.room.name_template_rooms.items())
         print(f"影像辨識綁房間：{binds}（只在這些桌用樣板找這些名字，其餘桌不找）")
+        print(f"影像比對門檻：分數≥{engine.cfg.room.name_match_threshold:.2f} 且領先第二名>{engine.cfg.room.name_match_margin:.2f} 才採用")
     from star_follow.vision.ocr import warmup_ocr
 
     warmup_ocr()
