@@ -68,6 +68,14 @@ datas.append((str(PROJECT / "star_follow" / "config.yaml"), "_ref"))
 for _tpl in (PROJECT / "star_follow" / "vision" / "templates").glob("*.png"):
     datas.append((str(_tpl), "templates"))
 
+# 玩家暱稱「影像比對」樣板（index.json + 圖檔）：對應 paths.name_templates_dir()。
+# OCR 讀不準的暱稱改用比對長相找欄位。沒有圖檔時只有空 index.json，不影響行為。
+_NAME_TPL = PROJECT / "star_follow" / "data" / "name_templates"
+if _NAME_TPL.is_dir():
+    for _f in _NAME_TPL.glob("*"):
+        if _f.is_file():
+            datas.append((str(_f), "name_templates"))
+
 hiddenimports = [
     "win32gui",
     "win32con",

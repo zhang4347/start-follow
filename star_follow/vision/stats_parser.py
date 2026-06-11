@@ -5,6 +5,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
+import cv2
 import numpy as np
 
 from star_follow.config import AppConfig
@@ -436,6 +437,26 @@ def _header_cells(table: np.ndarray, layout: dict) -> list[tuple[int, np.ndarray
     return [(idx, header[:, x0:x1]) for idx, (x0, x1) in enumerate(cols)]
 
 
+def _cell_has_ink(cell: np.ndarray) -> bool:
+    """這格表頭是否「有字」（亮字像素夠多）。空白／裝飾欄回 False。
+
+    用來避免白字深掃補救對「根本沒人的空欄」白白跑滿 7 步前處理（每欄 ~數秒），
+    那是巡防慢機器整排讀表暴衝到 12～20s 的主因之一。
+
+    實測（55×143 表頭格）：有名字的欄亮字像素 ~900＋，空欄僅 ~140（裝飾/分隔線）。
+    取面積 4% 當門檻，兩者間距很大，不會誤砍真名字。
+    """
+    if cell is None or cell.size == 0:
+        return False
+    gray = cv2.cvtColor(cell, cv2.COLOR_RGB2GRAY) if cell.ndim == 3 else cell
+    area = gray.shape[0] * gray.shape[1]
+    if area == 0:
+        return False
+    thr = max(float(gray.mean()) + 25.0, 130.0)
+    min_pixels = max(200, int(area * 0.04))
+    return int((gray >= thr).sum()) >= min_pixels
+
+
 def read_column_header_cands(
     table: np.ndarray,
     layout: dict,
@@ -691,8 +712,11 @@ def resolve_follow_columns(
     # 是慢機器暴衝到 20s+ 的元凶。超時就放棄補救（對象沒對到會走防踢路徑，下一局再試），
     # 但不影響上面淺掃已經對到的對象。
     if unresolved and time.perf_counter() < deadline:
-        ink_cols = {idx for idx, _cell in _header_cells(table, layout)} - {
-            idx for idx, c in cand_headers if c
+        # 只深掃「真的有字、但淺掃讀空」的欄；空白／裝飾欄不再白白跑滿白字補救（每欄數秒）。
+        got = {idx for idx, c in cand_headers if c}
+        ink_cols = {
+            idx for idx, cell in _header_cells(table, layout)
+            if idx not in got and _cell_has_ink(cell)
         }
         if ink_cols:
             deep_headers = read_column_header_cands(

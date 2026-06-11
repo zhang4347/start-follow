@@ -756,6 +756,32 @@ class FollowEngine:
         self._col_cache = dict(result.resolved_columns)
         self._cache_column_hints()
 
+    def _patrol_prelocate(self, frame) -> None:
+        """巡防預定位（黏桌每個下注窗口都要做）：優先用本桌已知欄位做「單欄驗證」，
+        對到就沿用——免掉每局整排中文表頭 OCR（實測 12～19s，會把下注窗口吃光導致
+        『判斷時間不夠、沒動、一直換桌』）。驗不過（對象換位/離桌）才整排重掃。
+
+        與 _resolve_columns 不同：巡防有 16 個對象、同桌通常只在 1～2 個，故只驗證
+        『本桌已對到的那幾欄』，不要求全部對象都在快取裡。
+        """
+        entries = self._active_targets()
+        present = [(e.name, self._col_cache[e.name]) for e in entries if e.name in self._col_cache]
+        if present:
+            vr = verify_follow_columns(frame, self.cfg, present)
+            if len(vr.resolved_columns) == len(present):
+                self.ctx.resolved_columns = dict(vr.resolved_columns)
+                self._cache_column_hints()
+                logger.info("巡防欄位快取命中 %.0f ms 欄位=%s", vr.elapsed_ms, vr.resolved_columns)
+                return
+            logger.info("巡防欄位快取失效（對象換位/離桌），整排重掃確認")
+        targets = [(e.name, e.column_index) for e in entries]
+        result = resolve_follow_columns(frame, self.cfg, targets)
+        if result.elapsed_ms:
+            logger.info("巡防表頭重掃 %.0f ms", result.elapsed_ms)
+        self.ctx.resolved_columns = dict(result.resolved_columns)
+        self._col_cache = dict(result.resolved_columns)
+        self._cache_column_hints()
+
     def _build_plan(
         self,
         frame,
@@ -1914,8 +1940,8 @@ class FollowEngine:
                     return "timeout"
                 self._position_stats_for_read()
                 opened = True
-                # 預定位：完整讀一次解析欄位（與進桌偵測同法，比只讀表頭可靠），確認對象在
-                self._build_plan(capture_client(win), refresh_only=False, include_scroll=True)
+                # 預定位：優先用快取單欄驗證（快），驗不過才整排重掃，確認對象在
+                self._patrol_prelocate(capture_client(win))
                 logger.info("No.%s 預定位欄位=%s", cur, self.ctx.resolved_columns)
                 if not self.ctx.resolved_columns:
                     if not self._close_stats_panel(capture_client(win)):
