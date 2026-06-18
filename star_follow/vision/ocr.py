@@ -444,6 +444,13 @@ def warmup_ocr() -> None:
         ocr_name_cell(dummy)
     except Exception:
         pass
+    # 神經網路表頭 OCR（RapidOCR）首次呼叫要載入 ONNX 模型（~1.5s），先暖機避免
+    # 第一桌讀表卡頓。沒安裝就略過（退回 Tesseract）。
+    if rapid_available():
+        try:
+            ocr_chinese_rapid(dummy)
+        except Exception:
+            pass
 
 
 def ocr_chinese_line(img: np.ndarray, *, stats: bool = False) -> tuple[str, float]:
@@ -488,3 +495,73 @@ def ocr_chinese_paddle(img: np.ndarray) -> tuple[str, float]:
         texts.append(line[1][0])
         confs.append(float(line[1][1]))
     return "".join(texts), sum(confs) / len(confs)
+
+
+@lru_cache(maxsize=1)
+def rapid_available() -> bool:
+    """是否能用 RapidOCR（ONNXRuntime）。打包版未含時回 False，自動退回 Tesseract。"""
+    try:
+        import rapidocr_onnxruntime  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+@lru_cache(maxsize=1)
+def _rapid_reader():
+    from rapidocr_onnxruntime import RapidOCR
+
+    return RapidOCR()
+
+
+def ocr_chinese_rapid(img: np.ndarray) -> tuple[str, float]:
+    """RapidOCR 辨識「已裁好的單行表頭」：用 rec-only（跳過文字偵測），對預裁切小圖
+    又快（實測 ~50ms）又準。回傳 (文字, 信心)。模型輸出多為簡體，比對端會做簡繁正規化。"""
+    try:
+        reader = _rapid_reader()
+    except Exception:
+        return "", 0.0
+    try:
+        result, _ = reader(img, use_det=False, use_cls=False, use_rec=True)
+    except Exception:
+        return "", 0.0
+    if not result:
+        return "", 0.0
+    texts: list[str] = []
+    confs: list[float] = []
+    for item in result:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            texts.append(str(item[0]))
+            try:
+                confs.append(float(item[1]))
+            except (TypeError, ValueError):
+                pass
+    if not texts:
+        return "", 0.0
+    return "".join(texts), (sum(confs) / len(confs) if confs else 0.0)
+
+
+def neural_available() -> bool:
+    """是否有可用的神經網路中文 OCR（優先 RapidOCR，其次 PaddleOCR）。"""
+    return rapid_available() or paddle_available()
+
+
+def ocr_chinese_neural(img: np.ndarray) -> tuple[str, float]:
+    """神經網路中文 OCR：優先 RapidOCR → 退 PaddleOCR → 再退 Tesseract 單行。"""
+    if rapid_available():
+        text, conf = ocr_chinese_rapid(img)
+        if text:
+            return text, conf
+    if paddle_available():
+        return ocr_chinese_paddle(img)
+    return ocr_chinese_line(img)
+
+
+def active_neural_engine() -> str:
+    """目前實際會用的中文表頭 OCR 引擎名稱（供啟動 log/自我檢查顯示）。"""
+    if rapid_available():
+        return "RapidOCR"
+    if paddle_available():
+        return "PaddleOCR"
+    return "Tesseract"

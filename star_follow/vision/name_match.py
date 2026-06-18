@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 
 from star_follow import paths
+from star_follow.vision.zh import to_hans
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ def _norm_name(s: str) -> str:
             out.append(chr(o - 0xFEE0))
         else:
             out.append(ch)
-    return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", "".join(out))
+    return to_hans(re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", "".join(out)))
 
 
 def _imread_unicode(path) -> np.ndarray | None:

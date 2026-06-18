@@ -11,5 +11,8 @@ PyYAML>=6.0.1
 gspread>=6.0.0
 google-auth>=2.0.0
 cachetools>=5.0.0
+# 中文表頭暱稱辨識：神經網路 OCR（ONNXRuntime CPU，免 CUDA）＋簡繁正規化
+rapidocr_onnxruntime>=1.3.0
+zhconv>=1.4.0
 # Optional: paddleocr for Chinese nicknames (large download)
 # paddleocr>=2.7.0

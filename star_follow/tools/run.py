@@ -690,6 +690,31 @@ def _selftest() -> int:
         ok = False
         print(f"[失敗] Tesseract OCR：{exc}")
 
+    # 神經網路表頭 OCR（RapidOCR）：確認打包含模型且能真的辨識（這是本版主賣點，
+    # 若退回 Tesseract 代表打包漏了 onnxruntime/模型，務必在自我檢查就抓出來）。
+    try:
+        import numpy as np
+
+        from star_follow.vision import ocr as _ocr
+
+        eng = _ocr.active_neural_engine()
+        if _ocr.rapid_available():
+            _txt, _conf = _ocr.ocr_chinese_rapid(np.full((48, 160, 3), 255, dtype=np.uint8))
+            print(f"神經網路 OCR：{eng} 載入成功（表頭暱稱用這個辨識）")
+        else:
+            ok = False
+            print(f"[失敗] 神經網路 OCR 不可用 → 會退回 {eng}（打包可能漏了 rapidocr/onnxruntime）")
+    except Exception as exc:  # noqa: BLE001
+        ok = False
+        print(f"[失敗] 神經網路 OCR（RapidOCR）：{exc}")
+
+    try:
+        from star_follow.vision.zh import to_hans
+
+        print(f"簡繁正規化 zhconv：百家樂飛可 → {to_hans('百家樂飛可')}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[警告] 簡繁正規化不可用（簡繁名可能比對不到）：{exc}")
+
     print("=== 結果：", "全部通過 OK" if ok else "有錯誤 FAIL", "===")
     return 0 if ok else 1
 
@@ -839,6 +864,15 @@ def main() -> int:
     print(f"StarFollow v{_ver}")
     print("引擎啟動", mode, f"[{room_mode}]", f"({admin_tag})")
     print(f"記錄檔：{log_path}")
+    if engine.cfg.vision.header_use_paddle:
+        from star_follow.vision.ocr import active_neural_engine
+        eng = active_neural_engine()
+        if eng == "Tesseract":
+            print("文字辨識引擎：Tesseract（找不到 RapidOCR，已退回；準度較低，請確認打包含 rapidocr）")
+        else:
+            print(f"文字辨識引擎：{eng}（表頭暱稱用神經網路 OCR，較準；簡繁自動正規化）")
+    else:
+        print("文字辨識引擎：Tesseract（header_use_paddle=false）")
     bset = engine.cfg.betting
     if bset.follow_ratio_enabled and not (bset.follow_ratio_min >= 1.0 and bset.follow_ratio_max >= 1.0):
         print(

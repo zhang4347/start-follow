@@ -14,7 +14,7 @@ $stage = Join-Path $stageRoot $stageName
 
 Write-Host "[0/5] 關閉殘留程式並確認相依套件..." -ForegroundColor Cyan
 Get-Process StarFollow -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-& $py -m pip install -q gspread google-auth cachetools 2>&1 | Out-Null
+& $py -m pip install -q gspread google-auth cachetools rapidocr_onnxruntime zhconv 2>&1 | Out-Null
 # 先刪 build/dist 與所有 __pycache__，避免 PyInstaller 中途失敗時沿用「舊的」
 # dist\StarFollow.exe（會把過期 bytecode 打包進去，造成已修好的程式碼沒生效）。
 Remove-Item .\build -Recurse -Force -ErrorAction SilentlyContinue

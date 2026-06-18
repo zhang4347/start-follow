@@ -12,16 +12,17 @@ from star_follow.config import AppConfig
 
 from . import ocr as ocr_mod
 from .ocr import (
+    neural_available,
     ocr_amount,
     ocr_chinese_line,
-    ocr_chinese_paddle,
+    ocr_chinese_neural,
     ocr_name_candidates,
     ocr_name_cell,
     ocr_name_trace,
-    paddle_available,
 )
 from . import name_match
 from .roi import scale_rect
+from .zh import to_hans
 from .stats_table_roi import find_stats_table_in_panel
 
 
@@ -371,7 +372,7 @@ def _read_header_columns(
     for x0, x1 in cols:
         cell = header[:, x0:x1]
         if use_paddle:
-            name, conf = ocr_chinese_paddle(cell)
+            name, conf = ocr_chinese_neural(cell)
         else:
             name, conf = ocr_chinese_line(cell, stats=True)
         name = _clean_name(name)
@@ -397,9 +398,9 @@ def _ocr_header_cands(cell: np.ndarray, *, deep: bool = True) -> list[str]:
 
     deep=False：淺掃（只跑最便宜的一步），空欄不再空轉跑滿白字補救步驟。
     """
-    if _USE_PADDLE_HEADER and paddle_available():
+    if _USE_PADDLE_HEADER and neural_available():
         try:
-            name, _ = ocr_chinese_paddle(cell)
+            name, _ = ocr_chinese_neural(cell)
             name = _clean_name(name)
             if name:
                 return [name]
@@ -526,7 +527,8 @@ def _norm_name(s: str) -> str:
         else:
             out.append(ch)
     t = "".join(out)
-    return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", t)
+    cleaned = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", t)
+    return to_hans(cleaned)
 
 
 def find_column_for_player_cands(

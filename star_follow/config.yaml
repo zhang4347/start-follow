@@ -155,7 +155,7 @@ click_points:
 vision:
   fast_ocr: true
   ocr_scale: 1
-  header_use_paddle: false
+  header_use_paddle: true
   header_ocr_budget_s: 8.0
 roi:
   countdown:

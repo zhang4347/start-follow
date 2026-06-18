@@ -12,7 +12,12 @@
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import (
+    collect_data_files,
+    collect_dynamic_libs,
+    collect_submodules,
+    copy_metadata,
+)
 
 PROJECT = Path(SPECPATH)
 _PKG_TESS = PROJECT / "star_follow" / "tesseract"
@@ -108,6 +113,32 @@ for _pkg in ("gspread", "google-auth", "requests", "google-api-core"):
         pass
 datas += collect_data_files("gspread")
 datas += collect_data_files("certifi")
+
+# --- RapidOCR（神經網路中文表頭 OCR，ONNXRuntime CPU）：模型檔(.onnx)、設定(.yaml)、
+#     onnxruntime 與相依（shapely/pyclipper）的原生 DLL，全部打包進去，確保客戶端不裝
+#     任何東西也能用 RapidOCR；缺檔時程式會自動退回 Tesseract。zhconv 為簡繁字典。 ---
+for _pkg in ("rapidocr_onnxruntime", "onnxruntime", "zhconv"):
+    try:
+        datas += collect_data_files(_pkg)
+    except Exception:
+        pass
+for _pkg in ("rapidocr_onnxruntime", "onnxruntime", "shapely", "pyclipper"):
+    try:
+        hiddenimports += collect_submodules(_pkg)
+    except Exception:
+        pass
+for _pkg in ("onnxruntime", "shapely", "pyclipper", "rapidocr_onnxruntime"):
+    try:
+        binaries += collect_dynamic_libs(_pkg)
+    except Exception:
+        pass
+hiddenimports += [
+    "onnxruntime",
+    "rapidocr_onnxruntime",
+    "zhconv",
+    "shapely",
+    "pyclipper",
+]
 
 a = Analysis(
     ["star_follow_app.py"],
