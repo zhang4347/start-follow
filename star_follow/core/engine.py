@@ -63,6 +63,8 @@ class RoundContext:
     # 最近一次 _build_plan「過濾前」對象實際下注的區域（含莊/閒），供換桌判斷
     # 「對象只下莊/閒（不是我們要跟的）→ 不黏桌」用。
     last_raw_bet_areas: set[str] = field(default_factory=set)
+    # 本局已對哪些對象發過「單局總下注超標」TG 警告（每局每對象最多一次，避免洗版）。
+    total_warn_names: set[str] = field(default_factory=set)
 
 
 class FollowEngine:
@@ -814,6 +816,9 @@ class FollowEngine:
             self._col_cache = dict(result.resolved_columns)
             self._cache_column_hints()
         plan: dict[str, int] = {}
+        # 每個對象「本局總下注」與分項（含莊/閒，過濾前的真實下注），供總額警告用。
+        per_target_total: dict[str, int] = {}
+        per_target_bets: dict[str, dict[str, int]] = {}
         for entry in entries:
             col = result.resolved_columns.get(entry.name)
             if col is None:
@@ -828,6 +833,10 @@ class FollowEngine:
             for stats_name, amount in bets.items():
                 bet_key = self.cfg.stats_to_bet.get(stats_name, stats_name)
                 plan[bet_key] = plan.get(bet_key, 0) + amount
+                if amount > 0:
+                    per_target_total[entry.name] = per_target_total.get(entry.name, 0) + amount
+                    tb = per_target_bets.setdefault(entry.name, {})
+                    tb[stats_name] = tb.get(stats_name, 0) + amount
 
         # 1b 模式：已滑到底、單張截圖就含最後一列（閒龍寶），不需要再往下補讀。
         scroll_row = self.cfg.raw.get("stats_scroll_row")
@@ -851,11 +860,16 @@ class FollowEngine:
                         )
                     continue
                 plan[bet_key] = plan.get(bet_key, 0) + amount
+                per_target_total[name] = per_target_total.get(name, 0) + amount
+                tb = per_target_bets.setdefault(name, {})
+                tb[scroll_row] = tb.get(scroll_row, 0) + amount
                 logger.info("最底列有數字 → %s：%s %d", scroll_row, name, amount)
 
         # 記錄「過濾前」對象實際下注的區域（含莊/閒），供換桌邏輯判斷對象是否
         # 只下莊/閒。
         self.ctx.last_raw_bet_areas = {area for area, amt in plan.items() if amt > 0}
+        # 對象「單局總下注」超標 → 發 TG 警告（只提醒、不影響跟注）。
+        self._warn_round_total(per_target_total, per_target_bets)
         plan = self._filter_follow_plan(plan)
         plan = self._risk_filter_plan(plan)
         plan = self._scale_follow_plan(plan)
@@ -864,6 +878,37 @@ class FollowEngine:
     # 兩模式都「絕不跟」莊/閒（硬規則，不受 config 影響；換桌只跟特殊邊注、
     # 掛桌也不跟莊閒，掛桌防踢補注是另一條路徑不經過這裡）。
     _ALWAYS_EXCLUDE_FOLLOW = frozenset({"莊", "閒"})
+
+    def _warn_round_total(
+        self,
+        per_target_total: dict[str, int],
+        per_target_bets: dict[str, dict[str, int]],
+    ) -> None:
+        """追蹤對象「單局總下注」（同一局跨多注加總，含莊/閒）超過警戒值 → 發 Telegram 警告。
+
+        只「提醒」，不影響跟注（跟注照常走 max_follow_bet 單筆過濾）。例：對象同一局
+        和 19 萬＋幸運六 19 萬＝38 萬，雖然各自單筆可能卡了單筆上限不跟，但總額已過 30 萬，
+        就主動通知。每局每對象最多通知一次，避免重複讀表洗版。
+        """
+        warn = getattr(self.cfg.betting, "round_total_warn", 0) or 0
+        if warn <= 0 or not per_target_total:
+            return
+        room = self._current_room()
+        tag = f"No.{room}" if room else "本桌"
+        for name, total in per_target_total.items():
+            if total <= warn or name in self.ctx.total_warn_names:
+                continue
+            self.ctx.total_warn_names.add(name)
+            bets = per_target_bets.get(name, {})
+            breakdown = "、".join(
+                f"{area} {amt:,}" for area, amt in bets.items() if amt > 0
+            )
+            msg = (
+                f"⚠️ 追蹤對象「{name}」單局總下注 {total:,} 超過警戒 {warn:,}（{tag}）"
+                + (f"：{breakdown}" if breakdown else "")
+            )
+            logger.warning(msg)
+            self._notify_targets_gone(msg)
 
     def _filter_follow_plan(self, plan: dict[str, int]) -> dict[str, int]:
         """兩模式共用：濾掉「不跟」的下注區。莊/閒一律不跟（硬規則），

@@ -81,6 +81,7 @@ def _read_launch_settings() -> dict:
         "account_name": None,
         "follow_ratio": None,  # (lo, hi) 比例範圍；False=關閉(跟原額)；None=不指定(用 config 預設)
         "max_follow_bet": None,  # 單注上限；0=不限；None=不指定(用 config 預設)
+        "round_total_warn": None,  # 單局總下注 TG 警告門檻；0=不提醒；None=不指定(用 config 預設)
         "name_template_rooms": {},  # {暱稱: [桌號,...]} 影像辨識綁房間；空=不指定
         "name_match_threshold": None,  # 影像比對採用門檻；None=不指定(用 config 預設)
         "name_match_margin": None,  # 影像比對領先第二名最小差距；None=不指定
@@ -128,6 +129,9 @@ def _read_launch_settings() -> dict:
                 out["balance_test"] = True
             elif any(v in val for v in ("檢查", "檢測", "自我", "selftest", "test")):
                 out["selftest"] = True
+        elif any(k in key for k in ("單局總下注警告", "单局总下注警告", "總下注警告", "总下注警告", "單局總額警告", "round_total_warn")):
+            # 註：這條必須排在「下注」之前判斷——key 含「下注」字樣，否則會被下注分支吃掉。
+            out["round_total_warn"] = _parse_amount_setting(val)
         elif any(k in key for k in ("下注", "實戰", "bet", "live")):
             if any(v in val for v in ("開", "啟", "是", "on", "true", "yes", "1")):
                 out["live"] = True
@@ -262,6 +266,7 @@ _LAUNCH_OPTION_KEYS: dict[str, tuple[str, ...]] = {
     "對象": ("對象", "对象", "跟注對象", "target"),
     "跟注比例": ("跟注比例", "下注比例", "比例", "ratio"),
     "單注上限": ("單注上限", "单注上限", "最大跟注", "max_bet", "maxbet"),
+    "單局總下注警告": ("單局總下注警告", "单局总下注警告", "總下注警告", "总下注警告", "單局總額警告", "round_total_warn"),
     "影像辨識房間": ("影像辨識房間", "圖像辨識房間", "影像房間", "影像辨識", "template_room"),
     "影像比對門檻": ("影像比對門檻", "比對門檻", "影像門檻", "match_threshold"),
     "影像比對領先差": ("影像比對領先差", "領先差", "比對領先", "match_margin"),
@@ -309,6 +314,14 @@ _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
         "#    例：單注上限=20萬  或  單注上限=200000\n"
         "#    填『不限』或 0 = 不限制。留空 = 用預設 20 萬。\n"
         "單注上限=20萬"
+    ),
+    "單局總下注警告": (
+        "# 【單局總下注警告】提醒用（不影響跟注）：追蹤對象『同一局』多注加總（含莊/閒，\n"
+        "#    例如 和19萬＋幸運六19萬＝38萬）超過這個金額，就發 Telegram 警告通知。\n"
+        "#    與『單注上限』不同：單注上限是『單筆』超過就不跟；這裡是『整局總額』只提醒。\n"
+        "#    例：單局總下注警告=30萬  或  單局總下注警告=300000\n"
+        "#    填『不限』或 0 = 不提醒。留空 = 用預設 30 萬。\n"
+        "單局總下注警告=30萬"
     ),
     "影像辨識房間": (
         "# 【影像辨識房間】少數暱稱（藝術字/反白）OCR 怎麼加強都讀不準，改用『比對長相』找。\n"
@@ -837,6 +850,10 @@ def main() -> int:
     mb = settings.get("max_follow_bet")
     if mb is not None:
         engine.cfg.betting.max_follow_bet = int(mb)
+    # 提醒：單局總下注警告門檻（對象本局多注加總超過就發 TG，不影響跟注）
+    rtw = settings.get("round_total_warn")
+    if rtw is not None:
+        engine.cfg.betting.round_total_warn = int(rtw)
     # 影像辨識綁房間：覆寫 config，並重建引擎對照表（只在指定桌才找這些名字）
     ntr = settings.get("name_template_rooms")
     if ntr:
@@ -885,6 +902,8 @@ def main() -> int:
         print(f"風控：對象單注 > {bset.max_follow_bet:,} 不跟")
     if bset.max_round_stake:
         print(f"風控：本局總跟注 > {bset.max_round_stake:,} 整局不跟")
+    if bset.round_total_warn:
+        print(f"提醒：對象單局總下注 > {bset.round_total_warn:,} 發 TG 警告（只提醒、不影響跟注）")
     if engine.cfg.room.name_template_rooms:
         binds = "、".join(f"{n}→No.{'/'.join(map(str, r))}" for n, r in engine.cfg.room.name_template_rooms.items())
         print(f"影像辨識綁房間：{binds}（只在這些桌用樣板找這些名字，其餘桌不找）")

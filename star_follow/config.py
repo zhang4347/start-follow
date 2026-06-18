@@ -158,6 +158,9 @@ class BettingConfig:
     max_follow_bet: int = 200000
     # 風控：本局「總跟注額」超過此上限就整局不跟。0 = 不限制。
     max_round_stake: int = 0
+    # 提醒（不影響跟注）：追蹤對象「單局總下注」（同一局跨多注加總，例如 和＋幸運六）
+    # 超過此金額就發 Telegram 警告。與 max_follow_bet（單筆不跟）是兩回事。0 = 不提醒。
+    round_total_warn: int = 300000
 
 
 # 內建 Telegram 通知預設：放在「程式碼」裡，才會被打包進 exe，並隨自動更新送到
@@ -389,6 +392,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
             follow_ratio_round_to=int(bt.get("follow_ratio_round_to", 1000)),
             max_follow_bet=int(bt.get("max_follow_bet", 200000)),
             max_round_stake=int(bt.get("max_round_stake", 0)),
+            round_total_warn=int(bt.get("round_total_warn", 300000)),
         ),
         telegram=TelegramConfig(
             enabled=bool(tg.get("enabled", False)),
@@ -527,6 +531,7 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
         "follow_ratio_round_to": cfg.betting.follow_ratio_round_to,
         "max_follow_bet": cfg.betting.max_follow_bet,
         "max_round_stake": cfg.betting.max_round_stake,
+        "round_total_warn": cfg.betting.round_total_warn,
     }
     data["telegram"] = {
         "enabled": cfg.telegram.enabled,

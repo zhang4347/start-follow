@@ -1,6 +1,6 @@
 {
-  "version": "1.2.40",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.40/StarFollow_1.2.40.zip",
-  "sha256": "e5edb5eaed6000070b230da6d547a494adfb02cf042b1956d7e5d93b0f81f046",
-  "notes": "中文暱稱辨識升級為神經網路 OCR（RapidOCR），更準、跨電腦更一致：1) 表頭玩家暱稱改用 RapidOCR（ONNXRuntime，CPU 即可、免顯卡免安裝），對遊戲花體字、小字、低對比的辨識遠勝舊版 Tesseract（例如『百家樂飛可』舊版會誤判成『百家標飛可』而追不到，新版可正確辨識）。模型與執行檔已內含於更新包，所有電腦更新後一律走 RapidOCR，與本機是否安裝任何軟體無關；萬一載入失敗會自動退回 Tesseract 不致當機，並可由啟動畫面『文字辨識引擎』那行確認。2) 神經網路模型多輸出簡體字，新增簡繁自動正規化，繁體名單也能穩定對上。"
+  "version": "1.2.41",
+  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.41/StarFollow_1.2.41.zip",
+  "sha256": "6adbd9dd87c9892a38aaa33e3c4d6d7182ed99d2129dd0f15344468e8b868618",
+  "notes": "新增『單局總下注警告』＋整理啟動設定：1) 追蹤對象同一局多注加總（含莊/閒，例如 和19萬＋幸運六19萬＝38萬）超過警戒值（預設 30 萬）就發 Telegram 警告。這是『只提醒、不影響跟注』，跟原本『單筆超過上限就不跟』(單注上限) 是兩回事；門檻可在啟動設定.txt 的『單局總下注警告』調整，每局每對象最多通知一次。2) 啟動設定.txt 重新整理成三區（① 共用設定 ② 換房巡防專用 ③ 掛房掛防專用），一眼看懂哪些設定屬於哪個模式。"
 }

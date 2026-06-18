@@ -105,6 +105,7 @@ betting:
   follow_ratio_round_to: 1000
   max_follow_bet: 200000
   max_round_stake: 0
+  round_total_warn: 300000
 telegram:
   enabled: false
   bot_token: 8893028334:AAGNJQt5djgMjjmCswxfwTUdh2h7VdvoXMM
