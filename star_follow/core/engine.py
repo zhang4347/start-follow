@@ -1846,6 +1846,17 @@ class FollowEngine:
                     and actual == start_table
                     and target != start_table
                 ):
+                    # 讀到「還停在出發桌」可能有兩種：真的滿桌沒換成，或新桌還在重繪、
+                    # 左下角短暫仍顯示舊桌號。再讀一次確認，避免把「其實已換成」誤判成滿桌
+                    # 而白白跳過一桌；只有再讀仍是出發桌，才算真的沒換成。
+                    time.sleep(0.6)
+                    actual = read_current_table(capture_client(self._win), self.cfg, self._win)
+                if (
+                    actual is not None
+                    and start_table is not None
+                    and actual == start_table
+                    and target != start_table
+                ):
                     # 點了「前往」卻還停在出發桌：目標多半滿桌／進不去。這不算換桌成功，
                     # 千萬別誤認已換桌（否則會一直黏在原桌空轉，最後被「五局未押注」踢出），
                     # 改試下一個目標桌。
@@ -1877,9 +1888,9 @@ class FollowEngine:
         return False
 
     def _patrol_scan_table(self) -> tuple[bool, dict[str, int]]:
-        """開統計表→OCR 表頭/金額→關表。
+        """開統計表→只讀表頭欄位確認「有沒有追蹤對象」→關表。
 
-        回傳 (本桌是否有追蹤對象, 跟注計畫)。計畫空代表對象目前未下注。
+        回傳 (本桌是否有追蹤對象, 空計畫)。進桌初判不需要金額，真正定稿在下注窗口才做。
         """
         assert self._win is not None
         win = self._win
@@ -1890,15 +1901,22 @@ class FollowEngine:
         self._position_stats_for_read()
         self.ctx = RoundContext()
         frame = capture_client(win)
-        # 進桌的「有沒有對象」初判只需要表頭欄位，不需要金額/最後一列 → include_scroll=False，
-        # 省掉一次往下捲表＋截圖（這裡回傳的 plan 並不會被採用，真正定稿在下注窗口才做）。
-        plan = self._build_plan(frame, refresh_only=False, include_scroll=False)
-        present = bool(self.ctx.resolved_columns)
-        self.ctx.plan = plan
+        # 進桌初判只需要「對象在不在」（表頭欄位），不需要金額。改用有「淺掃全欄＋只深掃
+        # 真的有墨水的欄＋時間預算」優化的 resolve_follow_columns；以前走 _build_plan→
+        # parse_stats_table 會對十幾個空欄全跑深掃，實測每桌約 18s，是巡房最大宗的慢動作。
+        entries = self._active_targets()
+        targets = [(e.name, e.column_index) for e in entries]
+        result = resolve_follow_columns(frame, self.cfg, targets)
+        if result.elapsed_ms:
+            logger.info("統計 OCR %.0f ms（進桌初判·表頭）", result.elapsed_ms)
+        self.ctx.resolved_columns = dict(result.resolved_columns)
+        self._col_cache = dict(result.resolved_columns)
+        self._cache_column_hints()
         self.ctx.ocr_done = True
+        present = bool(self.ctx.resolved_columns)
         if not self._close_stats_panel(capture_client(win)):
             self._force_close_stats(capture_client(win), reason="巡房關表")
-        return (present, plan)
+        return (present, {})
 
     def _patrol_place(self, plan: dict[str, int], t_bet: int | None) -> bool:
         """實際下注 + 記錄。"""
@@ -2169,8 +2187,8 @@ class FollowEngine:
                 sorted(patrol_set),
             )
             if not self._patrol_advance(self._patrol_current):
-                logger.warning("找不到可換的桌，稍候再試")
-                time.sleep(1.0)
+                logger.warning("找不到可換的桌（巡防範圍內多半都滿桌），稍候再試")
+                time.sleep(5.0)
             return True
 
         # 不管現在能不能下注，先開統計表看本桌有沒有追蹤對象：
@@ -2180,8 +2198,8 @@ class FollowEngine:
         self._patrol_visit_table(self._patrol_current)
 
         if not self._patrol_advance(self._patrol_current):
-            logger.warning("找不到可換的桌，稍候再試")
-            time.sleep(1.0)
+            logger.warning("找不到可換的桌（巡防範圍內多半都滿桌），稍候再試")
+            time.sleep(5.0)
         return True
 
     def run_loop(self) -> None:
