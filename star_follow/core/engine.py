@@ -2142,6 +2142,20 @@ class FollowEngine:
         # 開表前（在桌、未做統計 OCR）讓出一個整點餘額上傳的安全空檔（已節流，多數時候直接跳過）。
         self._patrol_offer_upload_window()
 
+        # 若落在「巡防範圍外」的房間（例如剛開啟時人在 No.5，但只設定巡 7~12），
+        # 不要黏在這桌掃描/跟注，直接導引回設定的巡防序列。
+        patrol_set = set(self.cfg.room.tables)
+        if patrol_set and self._patrol_current not in patrol_set:
+            logger.info(
+                "No.%s 不在巡防範圍 %s，直接換到範圍內的桌",
+                self._patrol_current,
+                sorted(patrol_set),
+            )
+            if not self._patrol_advance(self._patrol_current):
+                logger.warning("找不到可換的桌，稍候再試")
+                time.sleep(1.0)
+            return True
+
         # 不管現在能不能下注，先開統計表看本桌有沒有追蹤對象：
         #   有 → 黏桌持續跟注，到對象某局沒下邊注才換桌（在 _patrol_visit_table 內處理）
         #   沒有 → 直接換下一桌

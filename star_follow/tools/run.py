@@ -84,6 +84,7 @@ def _read_launch_settings() -> dict:
         "name_template_rooms": {},  # {暱稱: [桌號,...]} 影像辨識綁房間；空=不指定
         "name_match_threshold": None,  # 影像比對採用門檻；None=不指定(用 config 預設)
         "name_match_margin": None,  # 影像比對領先第二名最小差距；None=不指定
+        "patrol_rooms": [],  # 巡房模式要循的房號清單；空=不指定(用 config 預設)
     }
     p = paths.launch_settings_path()
     if not p.is_file():
@@ -132,6 +133,13 @@ def _read_launch_settings() -> dict:
                 out["live"] = True
             elif any(v in val for v in ("關", "閉", "否", "off", "false", "no", "0", "測試")):
                 out["live"] = False
+        elif any(k in key for k in ("巡房房間", "巡防房間", "巡房桌號", "巡防桌號", "巡房範圍", "巡防範圍", "循房", "patrol_room", "patrol_table")):
+            import re as _re
+
+            nums = [int(x) for x in _re.findall(r"\d+", val)]
+            # 去重保序
+            seen: set[int] = set()
+            out["patrol_rooms"] = [n for n in nums if not (n in seen or seen.add(n))]
         elif any(k in key for k in ("桌號", "桌号", "桌", "table")):
             import re as _re
 
@@ -250,6 +258,7 @@ def _split_targets(val: str) -> list[str]:
 _LAUNCH_OPTION_KEYS: dict[str, tuple[str, ...]] = {
     "帳號": ("帳號", "帐号", "帳戶", "account", "玩家"),
     "桌號": ("桌號", "桌号", "桌", "table"),
+    "巡房房間": ("巡房房間", "巡防房間", "巡房桌號", "巡防桌號", "巡房範圍", "巡防範圍", "循房", "patrol_room", "patrol_table"),
     "對象": ("對象", "对象", "跟注對象", "target"),
     "跟注比例": ("跟注比例", "下注比例", "比例", "ratio"),
     "單注上限": ("單注上限", "单注上限", "最大跟注", "max_bet", "maxbet"),
@@ -269,6 +278,13 @@ _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
         "#    被踢出或當機跳回大廳時，程式會自動回到這一桌。\n"
         "#    留空或填 0 = 不指定（待在當前桌；回大廳時回任一桌）。\n"
         "桌號="
+    ),
+    "巡房房間": (
+        "# 【巡房房間】巡房（換房）模式要循的房號，用逗號或頓號分隔，例：巡房房間=7、8、9、10、11、12\n"
+        "#    程式會照順序在這些房間之間輪流巡（巡完一輪再從頭）。\n"
+        "#    若開機時人在範圍外的房間（例如 No.5），會自動先換到範圍內的桌再開始巡。\n"
+        "#    留空 = 用 config 預設的全部房號。（只影響巡房模式；掛房模式不看這個）\n"
+        "巡房房間="
     ),
     "對象": (
         "# 【對象】掛房要跟注的對象暱稱，可填多個，用「、」或逗號分隔。\n"
@@ -810,6 +826,10 @@ def main() -> int:
         engine.cfg.room.name_match_margin = float(nmm)
     from star_follow.vision import name_match as _nm
     _nm.set_match_params(engine.cfg.room.name_match_threshold, engine.cfg.room.name_match_margin)
+    # 巡房房間：啟動設定覆寫 config 的巡防序列（只是「要巡哪幾間」，不影響辨識目前在哪間）
+    pr = settings.get("patrol_rooms")
+    if pr:
+        engine.cfg.room.tables = list(pr)
     t = engine.cfg.timing
     mode = "LIVE（含下注）" if not engine.dry_run else "dry-run（開關統計+OCR，不下注）"
     room_mode = "換房巡房" if engine.cfg.room.mode == "patrol" else "掛房（單桌）"
@@ -840,7 +860,8 @@ def main() -> int:
     warmup_ocr()
     if engine.cfg.room.mode == "patrol":
         print(f"換房：進房綠燈 T>={engine.cfg.room.min_enter_t} 才開統計跟注；下注後等開牌再換桌")
-        print(f"桌號序列：{engine.cfg.room.tables}")
+        src = "（啟動設定指定）" if settings.get("patrol_rooms") else "（config 預設＝全部）"
+        print(f"巡房房間{src}：{engine.cfg.room.tables}")
     else:
         print(
             f"時間軸：T={t.open_stats_at_t} 開統計 -> T<={t.prefetch_at_t} 預定位 -> "

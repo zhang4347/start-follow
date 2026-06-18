@@ -29,6 +29,16 @@ logger = logging.getLogger(__name__)
 
 _DIGITS = re.compile(r"\d+")
 
+# 房號辨識的合理上限：百家樂房號是 1~十幾號的小數字。辨識「目前在哪間／清單有哪些房」
+# 用這個範圍判定有效，而**不是**綁巡防範圍 cfg.room.tables——否則使用者把巡防範圍縮成
+# 幾間後，人一旦在範圍外的房間就會讀不出桌號而卡死。巡防要巡哪幾間另由 tables 決定。
+_ROOM_NO_MAX = 30
+
+
+def _valid_room_nos(cfg: AppConfig) -> set[int]:
+    """可被辨識的房號集合：合理房號範圍 ∪ 設定的巡防房號（保險）。"""
+    return set(range(1, _ROOM_NO_MAX + 1)) | set(cfg.room.tables)
+
 
 def _save_debug(frame: np.ndarray, cfg: AppConfig, win: GameWindow, name: str) -> None:
     """把換房失敗當下的畫面存到 logs/room_debug，供校正清單 ROI 用。"""
@@ -150,7 +160,7 @@ def read_list_rows(frame: np.ndarray, cfg: AppConfig, win: GameWindow) -> list[t
     x, y, w, h = rect
     crop = frame[y : y + h, x : x + w]
     raw = _ocr_numbers_with_y(crop)
-    valid = set(cfg.room.tables)
+    valid = _valid_room_nos(cfg)
     rows: list[tuple[int, int]] = []
     for no, cy in sorted(raw, key=lambda t: t[1]):
         if no not in valid:
@@ -182,7 +192,7 @@ def read_current_table(frame: np.ndarray, cfg: AppConfig, win: GameWindow) -> in
     x, y, w, h = rect
     crop = frame[y : y + h, x : x + w]
     nums = _ocr_numbers_with_y(crop)
-    valid = set(cfg.room.tables)
+    valid = _valid_room_nos(cfg)
     for no, _cy in nums:
         if no in valid:
             return no
