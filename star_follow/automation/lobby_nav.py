@@ -530,6 +530,26 @@ def prepare_for_table_play(
 
         if read_current_table(frame, cfg, win) is None:
             phase = classify_nav_screen(frame, cfg, win, use_ocr=False).phase
+    if phase == PHASE_TABLE:
+        return True, PHASE_TABLE
+    # 換桌後牌桌仍在重載時，單幀常被誤判成「棋牌大廳需滑動」。若直接回報非牌桌，引擎會
+    # 觸發破壞性的大廳回桌流程（滑動／點備援百家樂／隨機選台）把自己導出牌桌——這正是
+    # log 裡每換一桌就空轉 100 秒、甚至自己跳回大廳的主因。這裡先短等幾秒輪詢「可靠的」
+    # 在房特徵（倒數／桌號 OCR），確認在桌就直接放行，絕不亂導。
+    if phase in (PHASE_QIPAI_SCROLL, PHASE_QIPAI_READY, PHASE_UNKNOWN):
+        nc = _read_nav_cfg(cfg)
+        grace = min(float(nc.get("not_table_grace_s", 10.0)), 4.0)
+        poll = float(nc.get("not_table_poll_s", 0.4))
+        deadline = time.monotonic() + grace
+        while grace > 0 and time.monotonic() < deadline:
+            time.sleep(poll)
+            f2 = capture_fn()
+            if _is_kick_popup_visible(f2, cfg, win):
+                return False, PHASE_QIPAI_SCROLL
+            ok2, meta2 = detect_in_baccarat_room(f2, cfg, win)
+            if ok2 and str(meta2.get("method", "")) in ("room_switch", "countdown_ocr", "table_no_ocr"):
+                logger.info("牌桌重載中先誤判為大廳，短等後確認在牌桌（%s）", meta2.get("method", ""))
+                return True, PHASE_TABLE
     return phase == PHASE_TABLE, phase
 
 

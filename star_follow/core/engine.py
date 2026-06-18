@@ -1829,6 +1829,7 @@ class FollowEngine:
         from star_follow.automation.room_nav import read_current_table, switch_to_table
 
         assert self._win is not None
+        start_table = cur  # 出發桌：換桌成功一定要「離開」這一桌，否則只是滿桌沒換成
         for _ in range(len(self.cfg.room.tables) + 1):
             target = self._patrol_next_target(cur)
             if target is None:
@@ -1839,6 +1840,22 @@ class FollowEngine:
                 # 避免誤判（例如點到別列、或滿桌沒換成卻以為換成了）。
                 time.sleep(0.4)
                 actual = read_current_table(capture_client(self._win), self.cfg, self._win)
+                if (
+                    actual is not None
+                    and start_table is not None
+                    and actual == start_table
+                    and target != start_table
+                ):
+                    # 點了「前往」卻還停在出發桌：目標多半滿桌／進不去。這不算換桌成功，
+                    # 千萬別誤認已換桌（否則會一直黏在原桌空轉，最後被「五局未押注」踢出），
+                    # 改試下一個目標桌。
+                    logger.info(
+                        "換桌未離開 No.%d（目標 No.%d 多半滿桌/進不去），改試下一桌",
+                        start_table,
+                        target,
+                    )
+                    cur = target
+                    continue
                 if actual is None:
                     self._patrol_current = target
                     logger.info("已換到 No.%d（桌號未能確認）", target)
