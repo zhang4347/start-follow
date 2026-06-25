@@ -928,22 +928,22 @@ class FollowEngine:
     def _detect_probe(self, per_target_bets: dict[str, dict[str, int]]) -> set[str]:
         """判斷哪些對象本局在「試探放血」。
 
-        對手知道被跟單後，會用「整萬元 + 一次灑很多格／兩邊押同額」當餌誘我們複製大額
-        邊注。正常公式型下注金額帶尾數（如 12,900）、兩邊不同額。判定條件（全部可調）：
+        實測對手與正常對象的差別：正常公式型下注金額很「亂」（90k、94k、20k、36k…），
+        幾乎不會是 5 萬整數倍；試探則是乾淨的 50k/100k/150k/200k，常多格齊頭同額。
+        判定條件（任一成立即判試探，全部可調）：
 
-          可疑整數格數 ≥ probe_min_round_cells（金額 ≥ probe_round_unit 且為其整數倍），
-          且（邊注格數 ≥ probe_spray_areas 灑網 或 有 ≥2 格金額完全相同 鏡像同額）。
+          A. 「5 萬整數倍」（金額 ≥ probe_round_unit 且為其整數倍）的格數 ≥ probe_min_round_cells，或
+          B. 同一金額出現的格數 ≥ probe_same_amount_cells（齊頭同額；防對方改用非整數齊頭）。
 
         回傳「本局判為試探」的對象名集合（呼叫端會把這些對象整局不跟）。同時累計
-        連續試探局數，達 probe_escalate_rounds 就升級（換房請求換桌／掛房停跟）。
+        連續試探局數，達 probe_escalate_rounds 就升級（暫停程式／換房停跟）。
         """
         bcfg = self.cfg.betting
         if not getattr(bcfg, "probe_guard", True):
             return set()
-        unit = max(1, int(getattr(bcfg, "probe_round_unit", 10000) or 10000))
+        unit = max(1, int(getattr(bcfg, "probe_round_unit", 50000) or 50000))
         min_round = max(1, int(getattr(bcfg, "probe_min_round_cells", 2) or 2))
-        spray_n = max(1, int(getattr(bcfg, "probe_spray_areas", 3) or 3))
-        use_mirror = bool(getattr(bcfg, "probe_mirror", True))
+        same_n = int(getattr(bcfg, "probe_same_amount_cells", 3) or 0)
         escalate = int(getattr(bcfg, "probe_escalate_rounds", 0) or 0)
         probe_now: set[str] = set()
         for name, bets in per_target_bets.items():
@@ -951,9 +951,10 @@ class FollowEngine:
             if not cells:
                 continue
             round_cells = [a for a in cells if a >= unit and a % unit == 0]
-            spray = len(cells) >= spray_n
-            mirror = use_mirror and (len(cells) - len(set(cells)) > 0)
-            is_probe = len(round_cells) >= min_round and (spray or mirror)
+            max_same = max((cells.count(x) for x in set(cells)), default=0)
+            big_round = len(round_cells) >= min_round
+            same_head = bool(same_n) and max_same >= same_n
+            is_probe = big_round or same_head
             if not is_probe:
                 if self._probe_streak.get(name):
                     self._probe_streak[name] = 0  # 回到正常下注 → 連續計數歸零
@@ -962,13 +963,13 @@ class FollowEngine:
             self._probe_streak[name] = self._probe_streak.get(name, 0) + 1
             streak = self._probe_streak[name]
             why = []
-            if spray:
-                why.append(f"灑{len(cells)}格")
-            if mirror:
-                why.append("鏡像同額")
+            if big_round:
+                why.append(f"{unit:,}整數倍×{len(round_cells)}格")
+            if same_head:
+                why.append(f"齊頭同額×{max_same}格")
             logger.warning(
-                "反試探：「%s」本局判為試探（%s；整萬元 %d 格）→ 整局不跟（連續 %d 局）",
-                name, "＋".join(why) or "整數", len(round_cells), streak,
+                "反試探：「%s」本局判為試探（%s）→ 整局不跟（連續 %d 局）",
+                name, "＋".join(why), streak,
             )
             if escalate and streak >= escalate:
                 self._on_probe_escalate(name, streak)

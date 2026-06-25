@@ -87,7 +87,6 @@ def _read_launch_settings() -> dict:
         "name_match_margin": None,  # 影像比對領先第二名最小差距；None=不指定
         "patrol_rooms": [],  # 巡房模式要循的房號清單；空=不指定(用 config 預設)
         "probe_guard": None,  # 反試探開關；None=不指定(用 config 預設)
-        "probe_spray_areas": None,  # 灑網判定的下注區數門檻；None=不指定
         "probe_escalate_rounds": None,  # 連續幾局試探→升級反制；0=不升級；None=不指定
         "probe_escalate_action": None,  # 升級動作：pause/switch；None=不指定
     }
@@ -140,10 +139,6 @@ def _read_launch_settings() -> dict:
             out["probe_guard"] = any(
                 v in val for v in ("開", "啟", "是", "on", "true", "yes", "1")
             )
-        elif any(k in key for k in ("灑網格數", "灑網", "試探格數", "probe_spray")):
-            digits = "".join(c for c in val if c.isdigit())
-            if digits:
-                out["probe_spray_areas"] = int(digits)
         elif any(k in key for k in ("試探升級動作", "試探動作", "probe_action")):
             if any(v in val for v in ("暫停", "停止", "停程式", "pause", "stop")):
                 out["probe_escalate_action"] = "pause"
@@ -346,14 +341,12 @@ _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
         "單局總下注警告=30萬"
     ),
     "反試探": (
-        "# 【反試探】對手知道被自動跟單後，會用『整萬元 + 一次灑很多格／兩邊押同額』當餌，\n"
-        "#    誘我們複製大額邊注放血。正常公式型下注金額帶尾數（如 12,900）、兩邊不同額。\n"
-        "#    判定為『試探局』就『該對象整局不跟』；連續多局再自動停跟並換桌。\n"
-        "#    第一次判為試探的那一局就『先不下、觀察』；連續達門檻局數再升級反制。\n"
+        "# 【反試探】對手知道被自動跟單後，會用『乾淨大整數（5 萬整數倍：50k/100k/150k/200k）\n"
+        "#    + 多格／齊頭同額』當餌，誘我們複製大額邊注放血。實測正常下注金額很『亂』\n"
+        "#    （90k、94k、20k、36k…），幾乎不會是 5 萬整數倍，故不會被誤判。\n"
+        "#    判定為『試探局』就『該對象整局不跟（先不下、觀察）』；連續達門檻局數再升級反制。\n"
         "#    反試探=開／關（預設開）。\n"
         "反試探=開\n"
-        "# 【灑網格數】同一局下注區數 ≥ 這個值就算『灑網』（配合整萬元判定試探）。預設 3。\n"
-        "灑網格數=3\n"
         "# 【連續試探升級局數】同一對象連續這麼多局被判試探 → 執行下面的『試探升級動作』。\n"
         "#    填 1 = 一出現就升級；填 2 = 連續兩局才升級；填 0 = 只『試探局不跟』、不升級。預設 2。\n"
         "連續試探升級局數=2\n"
@@ -898,9 +891,6 @@ def main() -> int:
     pg = settings.get("probe_guard")
     if pg is not None:
         engine.cfg.betting.probe_guard = bool(pg)
-    psa = settings.get("probe_spray_areas")
-    if psa is not None:
-        engine.cfg.betting.probe_spray_areas = int(psa)
     per = settings.get("probe_escalate_rounds")
     if per is not None:
         engine.cfg.betting.probe_escalate_rounds = int(per)
@@ -965,8 +955,8 @@ def main() -> int:
         else:
             esc_txt = "，不升級"
         print(
-            f"反試探：整萬元≥{bset.probe_min_round_cells}格 +（灑網≥{bset.probe_spray_areas}格 或 鏡像同額）"
-            f"→ 該對象整局不跟{esc_txt}"
+            f"反試探：{bset.probe_round_unit:,}整數倍≥{bset.probe_min_round_cells}格 "
+            f"或 齊頭同額≥{bset.probe_same_amount_cells}格 → 該對象整局不跟{esc_txt}"
         )
     else:
         print("反試探：關閉")

@@ -161,14 +161,14 @@ class BettingConfig:
     # 提醒（不影響跟注）：追蹤對象「單局總下注」（同一局跨多注加總，例如 和＋幸運六）
     # 超過此金額就發 Telegram 警告。與 max_follow_bet（單筆不跟）是兩回事。0 = 不提醒。
     round_total_warn: int = 300000
-    # 反試探：對手知道被跟單後，會用「整萬元 + 一次灑很多格／兩邊押同額」當餌，誘我們
+    # 反試探：對手知道被跟單後，會用「乾淨大整數（5 萬整數倍）+ 多格／齊頭同額」當餌，誘我們
     # 複製大額邊注放血。判定為「試探局」就整局不跟該對象；連續多局再自動停跟並換桌。
-    # 正常公式型下注金額帶尾數（如 12,900）、兩邊不同額，不會被誤判。
+    # 實測：正常公式型下注金額很「亂」（90k、94k、20k、36k…），幾乎不會是 5 萬整數倍；
+    # 試探則是乾淨的 50k/100k/150k/200k。故以「5 萬整數倍的格數」當主判據。
     probe_guard: bool = True
-    probe_round_unit: int = 10000       # 「可疑整數」單位：金額為此倍數且 ≥ 此值才算可疑
-    probe_min_round_cells: int = 2      # 至少幾格是可疑整數，才納入試探判定
-    probe_spray_areas: int = 3          # 同局下注區數 ≥ 此值 → 灑網
-    probe_mirror: bool = True           # 有 ≥2 格金額完全相同（鏡像同額）也算試探
+    probe_round_unit: int = 50000       # 「可疑大整數」單位：金額為此倍數且 ≥ 此值才算可疑
+    probe_min_round_cells: int = 2      # 達幾格「可疑大整數」就判試探（正常下注幾乎不會出現）
+    probe_same_amount_cells: int = 3    # 另：≥幾格金額完全相同（齊頭同額）也判試探（防對方改用非整數齊頭）
     probe_escalate_rounds: int = 2      # 同對象連續幾局試探 → 升級反制（0=只「試探局不跟」不升級）
     # 升級反制動作：pause=暫停整支程式並發 TG（cover 已暴露時最穩，等人工換名重啟）；
     # switch=停跟該對象並換桌（巡防）／停跟（掛房）。
@@ -406,10 +406,9 @@ def load_config(path: Path | str | None = None) -> AppConfig:
             max_round_stake=int(bt.get("max_round_stake", 0)),
             round_total_warn=int(bt.get("round_total_warn", 300000)),
             probe_guard=bool(bt.get("probe_guard", True)),
-            probe_round_unit=int(bt.get("probe_round_unit", 10000)),
+            probe_round_unit=int(bt.get("probe_round_unit", 50000)),
             probe_min_round_cells=int(bt.get("probe_min_round_cells", 2)),
-            probe_spray_areas=int(bt.get("probe_spray_areas", 3)),
-            probe_mirror=bool(bt.get("probe_mirror", True)),
+            probe_same_amount_cells=int(bt.get("probe_same_amount_cells", 3)),
             probe_escalate_rounds=int(bt.get("probe_escalate_rounds", 2)),
             probe_escalate_action=str(bt.get("probe_escalate_action", "pause")),
         ),
@@ -554,8 +553,7 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
         "probe_guard": cfg.betting.probe_guard,
         "probe_round_unit": cfg.betting.probe_round_unit,
         "probe_min_round_cells": cfg.betting.probe_min_round_cells,
-        "probe_spray_areas": cfg.betting.probe_spray_areas,
-        "probe_mirror": cfg.betting.probe_mirror,
+        "probe_same_amount_cells": cfg.betting.probe_same_amount_cells,
         "probe_escalate_rounds": cfg.betting.probe_escalate_rounds,
         "probe_escalate_action": cfg.betting.probe_escalate_action,
     }

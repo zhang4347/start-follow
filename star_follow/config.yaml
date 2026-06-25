@@ -108,10 +108,9 @@ betting:
   max_round_stake: 0
   round_total_warn: 300000
   probe_guard: true
-  probe_round_unit: 10000
+  probe_round_unit: 50000
   probe_min_round_cells: 2
-  probe_spray_areas: 3
-  probe_mirror: true
+  probe_same_amount_cells: 3
   probe_escalate_rounds: 2
   probe_escalate_action: pause
 telegram:
