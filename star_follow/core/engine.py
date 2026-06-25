@@ -975,9 +975,25 @@ class FollowEngine:
         return probe_now
 
     def _on_probe_escalate(self, name: str, streak: int) -> None:
-        """同對象連續試探達門檻：換房 → 請求換桌；掛房 → 本次連線停跟此對象。"""
+        """同對象連續試探達門檻 → 升級反制。
+
+        動作由 probe_escalate_action 決定：
+          pause  ＝ 暫停整支程式並發 TG（cover 多半已暴露，停手最穩；等人工換帳號名後重啟）。
+          switch ＝ 巡房：停跟該對象並換桌；掛房：本次連線停跟此對象。
+        """
+        action = (getattr(self.cfg.betting, "probe_escalate_action", "pause") or "pause").lower()
         room = self._current_room()
         tag = f"No.{room}" if room else "本桌"
+        if action == "pause":
+            msg = (
+                f"🛑 追蹤對象「{name}」連續 {streak} 局試探放血（{tag}）→ 已暫停程式。"
+                "對手多半已知道這個帳號在跟單，請人工確認（建議換帳號名）後再重新啟動。"
+            )
+            logger.warning(msg)
+            self._notify_targets_gone(msg)
+            self._probe_streak[name] = 0
+            self._stop_engine(f"反試探暫停：{name} 連續 {streak} 局試探")
+            return
         if self.cfg.room.mode == "patrol":
             self._probe_switch_requested = True
             msg = f"🛑 追蹤對象「{name}」連續 {streak} 局試探放血（{tag}）→ 停跟並換桌"

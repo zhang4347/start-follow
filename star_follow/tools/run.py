@@ -88,7 +88,8 @@ def _read_launch_settings() -> dict:
         "patrol_rooms": [],  # 巡房模式要循的房號清單；空=不指定(用 config 預設)
         "probe_guard": None,  # 反試探開關；None=不指定(用 config 預設)
         "probe_spray_areas": None,  # 灑網判定的下注區數門檻；None=不指定
-        "probe_escalate_rounds": None,  # 連續幾局試探→停跟換桌；0=不升級；None=不指定
+        "probe_escalate_rounds": None,  # 連續幾局試探→升級反制；0=不升級；None=不指定
+        "probe_escalate_action": None,  # 升級動作：pause/switch；None=不指定
     }
     p = paths.launch_settings_path()
     if not p.is_file():
@@ -143,7 +144,12 @@ def _read_launch_settings() -> dict:
             digits = "".join(c for c in val if c.isdigit())
             if digits:
                 out["probe_spray_areas"] = int(digits)
-        elif any(k in key for k in ("連續試探換桌", "試探換桌局數", "試探升級", "probe_escalate")):
+        elif any(k in key for k in ("試探升級動作", "試探動作", "probe_action")):
+            if any(v in val for v in ("暫停", "停止", "停程式", "pause", "stop")):
+                out["probe_escalate_action"] = "pause"
+            elif any(v in val for v in ("換桌", "停跟", "switch")):
+                out["probe_escalate_action"] = "switch"
+        elif any(k in key for k in ("連續試探", "試探換桌局數", "試探升級", "probe_escalate")):
             digits = "".join(c for c in val if c.isdigit())
             if digits:
                 out["probe_escalate_rounds"] = int(digits)
@@ -282,7 +288,7 @@ _LAUNCH_OPTION_KEYS: dict[str, tuple[str, ...]] = {
     "跟注比例": ("跟注比例", "下注比例", "比例", "ratio"),
     "單注上限": ("單注上限", "单注上限", "最大跟注", "max_bet", "maxbet"),
     "單局總下注警告": ("單局總下注警告", "单局总下注警告", "總下注警告", "总下注警告", "單局總額警告", "round_total_warn"),
-    "反試探": ("反試探", "防試探", "試探防護", "probe_guard", "灑網", "試探換桌", "probe_escalate"),
+    "反試探": ("反試探", "防試探", "試探防護", "probe_guard", "灑網", "試探升級", "試探換桌", "試探動作", "probe_escalate"),
     "影像辨識房間": ("影像辨識房間", "圖像辨識房間", "影像房間", "影像辨識", "template_room"),
     "影像比對門檻": ("影像比對門檻", "比對門檻", "影像門檻", "match_threshold"),
     "影像比對領先差": ("影像比對領先差", "領先差", "比對領先", "match_margin"),
@@ -343,20 +349,26 @@ _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
         "# 【反試探】對手知道被自動跟單後，會用『整萬元 + 一次灑很多格／兩邊押同額』當餌，\n"
         "#    誘我們複製大額邊注放血。正常公式型下注金額帶尾數（如 12,900）、兩邊不同額。\n"
         "#    判定為『試探局』就『該對象整局不跟』；連續多局再自動停跟並換桌。\n"
+        "#    第一次判為試探的那一局就『先不下、觀察』；連續達門檻局數再升級反制。\n"
         "#    反試探=開／關（預設開）。\n"
         "反試探=開\n"
         "# 【灑網格數】同一局下注區數 ≥ 這個值就算『灑網』（配合整萬元判定試探）。預設 3。\n"
         "灑網格數=3\n"
-        "# 【連續試探換桌局數】同一對象連續這麼多局被判試探 → 停跟並換桌。\n"
-        "#    填 1 = 一出現就換；填 2 = 連續兩局才換；填 0 = 只『試探局不跟』、不換桌。預設 2。\n"
-        "連續試探換桌局數=2"
+        "# 【連續試探升級局數】同一對象連續這麼多局被判試探 → 執行下面的『試探升級動作』。\n"
+        "#    填 1 = 一出現就升級；填 2 = 連續兩局才升級；填 0 = 只『試探局不跟』、不升級。預設 2。\n"
+        "連續試探升級局數=2\n"
+        "# 【試探升級動作】達門檻後要做什麼：\n"
+        "#    暫停 = 暫停整支程式並發 Telegram（對手多半已知道這帳號在跟單，停手最穩，\n"
+        "#           人工換帳號名後再重新啟動）。＝預設。\n"
+        "#    換桌 = 只停跟該對象並換桌（巡防）／停跟該對象（掛房），程式繼續跑。\n"
+        "試探升級動作=暫停"
     ),
     "影像辨識房間": (
         "# 【影像辨識房間】少數暱稱（藝術字/反白）OCR 怎麼加強都讀不準，改用『比對長相』找。\n"
         "#    這裡指定這些名字固定待在哪一桌 → 程式只會在那一桌用影像比對找它，其餘房間\n"
         "#    完全不找（避免在別桌把長相相近的路人誤比中而跟錯人），也更快。\n"
         "#    格式：暱稱:桌號，多個用「、」或逗號分隔。例：影像辨識房間=閃光福雷噓:15、三下治灸:14\n"
-        "#    留空 = 用內建預設（閃光福雷噓→No.15、三下治灸→No.14）。\n"
+        "#    留空 = 用內建預設（閃光福雷噓→No.15、三下治灸→No.14、還魂梅→No.16）。\n"
         "影像辨識房間="
     ),
     "影像比對門檻": (
@@ -892,6 +904,9 @@ def main() -> int:
     per = settings.get("probe_escalate_rounds")
     if per is not None:
         engine.cfg.betting.probe_escalate_rounds = int(per)
+    pact = settings.get("probe_escalate_action")
+    if pact is not None:
+        engine.cfg.betting.probe_escalate_action = str(pact)
     # 影像辨識綁房間：覆寫 config，並重建引擎對照表（只在指定桌才找這些名字）
     ntr = settings.get("name_template_rooms")
     if ntr:
@@ -944,9 +959,11 @@ def main() -> int:
         print(f"提醒：對象單局總下注 > {bset.round_total_warn:,} 發 TG 警告（只提醒、不影響跟注）")
     if bset.probe_guard:
         esc = bset.probe_escalate_rounds
-        esc_txt = (
-            f"，連續 {esc} 局試探→停跟並換桌" if esc else "，不升級換桌"
-        )
+        if esc:
+            act = "暫停程式" if str(bset.probe_escalate_action).lower() == "pause" else "停跟並換桌"
+            esc_txt = f"，連續 {esc} 局試探→{act}"
+        else:
+            esc_txt = "，不升級"
         print(
             f"反試探：整萬元≥{bset.probe_min_round_cells}格 +（灑網≥{bset.probe_spray_areas}格 或 鏡像同額）"
             f"→ 該對象整局不跟{esc_txt}"

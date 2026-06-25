@@ -169,7 +169,10 @@ class BettingConfig:
     probe_min_round_cells: int = 2      # 至少幾格是可疑整數，才納入試探判定
     probe_spray_areas: int = 3          # 同局下注區數 ≥ 此值 → 灑網
     probe_mirror: bool = True           # 有 ≥2 格金額完全相同（鏡像同額）也算試探
-    probe_escalate_rounds: int = 2      # 同對象連續幾局試探 → 停跟並換桌（0=只「試探局不跟」不升級）
+    probe_escalate_rounds: int = 2      # 同對象連續幾局試探 → 升級反制（0=只「試探局不跟」不升級）
+    # 升級反制動作：pause=暫停整支程式並發 TG（cover 已暴露時最穩，等人工換名重啟）；
+    # switch=停跟該對象並換桌（巡防）／停跟（掛房）。
+    probe_escalate_action: str = "pause"
 
 
 # 內建 Telegram 通知預設：放在「程式碼」裡，才會被打包進 exe，並隨自動更新送到
@@ -408,6 +411,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
             probe_spray_areas=int(bt.get("probe_spray_areas", 3)),
             probe_mirror=bool(bt.get("probe_mirror", True)),
             probe_escalate_rounds=int(bt.get("probe_escalate_rounds", 2)),
+            probe_escalate_action=str(bt.get("probe_escalate_action", "pause")),
         ),
         telegram=TelegramConfig(
             enabled=bool(tg.get("enabled", False)),
@@ -553,6 +557,7 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
         "probe_spray_areas": cfg.betting.probe_spray_areas,
         "probe_mirror": cfg.betting.probe_mirror,
         "probe_escalate_rounds": cfg.betting.probe_escalate_rounds,
+        "probe_escalate_action": cfg.betting.probe_escalate_action,
     }
     data["telegram"] = {
         "enabled": cfg.telegram.enabled,

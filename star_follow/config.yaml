@@ -85,6 +85,7 @@ room:
   name_template_rooms:
     閃光福雷噓: [15]
     三下治灸: [14]
+    還魂梅: [16]
   # 影像比對門檻：最佳分數 >= name_match_threshold 才算命中；且需領先第二名超過
   # name_match_margin（避免比到長相相近的路人）。分數偏低就調低、跟錯人就調高。
   # 可由「啟動設定.txt → 影像比對門檻 / 影像比對領先差」覆寫。
@@ -112,6 +113,7 @@ betting:
   probe_spray_areas: 3
   probe_mirror: true
   probe_escalate_rounds: 2
+  probe_escalate_action: pause
 telegram:
   enabled: false
   bot_token: 8893028334:AAGNJQt5djgMjjmCswxfwTUdh2h7VdvoXMM
