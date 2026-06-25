@@ -131,6 +131,10 @@ class FollowEngine:
         self._patrol_visited: set[int] = set()
         self._last_patrol_wait_log_mono = 0.0
         self._last_patrol_upload_window_mono = 0.0
+        # 反試探：同對象「連續試探局」計數；達門檻 → 換房請求／停跟。
+        self._probe_streak: dict[str, int] = {}
+        self._probe_blacklist: set[str] = set()  # 掛房不能換桌時，本次連線停跟的對象
+        self._probe_switch_requested = False      # 換房：偵測到連續試探，請求換桌
         # 影像辨識綁房間：{正規化暱稱: {桌號,...}}（只在這些桌才找該名字）。
         self._tmpl_room_binding: dict[str, set[int]] = {}
         self.reload_template_room_binding()
@@ -816,9 +820,10 @@ class FollowEngine:
             self._col_cache = dict(result.resolved_columns)
             self._cache_column_hints()
         plan: dict[str, int] = {}
-        # 每個對象「本局總下注」與分項（含莊/閒，過濾前的真實下注），供總額警告用。
+        # 每個對象「本局總下注」與分項（含莊/閒，過濾前的真實下注），供總額警告／反試探用。
         per_target_total: dict[str, int] = {}
         per_target_bets: dict[str, dict[str, int]] = {}
+        per_target_plan: dict[str, dict[str, int]] = {}  # 每對象對 plan 的貢獻（bet_key）
         for entry in entries:
             col = result.resolved_columns.get(entry.name)
             if col is None:
@@ -837,6 +842,8 @@ class FollowEngine:
                     per_target_total[entry.name] = per_target_total.get(entry.name, 0) + amount
                     tb = per_target_bets.setdefault(entry.name, {})
                     tb[stats_name] = tb.get(stats_name, 0) + amount
+                    ptp = per_target_plan.setdefault(entry.name, {})
+                    ptp[bet_key] = ptp.get(bet_key, 0) + amount
 
         # 1b 模式：已滑到底、單張截圖就含最後一列（閒龍寶），不需要再往下補讀。
         scroll_row = self.cfg.raw.get("stats_scroll_row")
@@ -863,6 +870,8 @@ class FollowEngine:
                 per_target_total[name] = per_target_total.get(name, 0) + amount
                 tb = per_target_bets.setdefault(name, {})
                 tb[scroll_row] = tb.get(scroll_row, 0) + amount
+                ptp = per_target_plan.setdefault(name, {})
+                ptp[bet_key] = ptp.get(bet_key, 0) + amount
                 logger.info("最底列有數字 → %s：%s %d", scroll_row, name, amount)
 
         # 記錄「過濾前」對象實際下注的區域（含莊/閒），供換桌邏輯判斷對象是否
@@ -870,6 +879,12 @@ class FollowEngine:
         self.ctx.last_raw_bet_areas = {area for area, amt in plan.items() if amt > 0}
         # 對象「單局總下注」超標 → 發 TG 警告（只提醒、不影響跟注）。
         self._warn_round_total(per_target_total, per_target_bets)
+        # 反試探：判定「試探局」的對象，整局不跟（從 plan 扣掉其貢獻）；連續達門檻會在
+        # _detect_probe 內升級為停跟＋換桌。掛房黑名單對象也一併扣掉。
+        probe_now = self._detect_probe(per_target_bets)
+        strip = set(probe_now) | (self._probe_blacklist & set(per_target_plan))
+        if strip:
+            plan = self._strip_targets_from_plan(plan, per_target_plan, strip)
         plan = self._filter_follow_plan(plan)
         plan = self._risk_filter_plan(plan)
         plan = self._scale_follow_plan(plan)
@@ -909,6 +924,85 @@ class FollowEngine:
             )
             logger.warning(msg)
             self._notify_targets_gone(msg)
+
+    def _detect_probe(self, per_target_bets: dict[str, dict[str, int]]) -> set[str]:
+        """判斷哪些對象本局在「試探放血」。
+
+        對手知道被跟單後，會用「整萬元 + 一次灑很多格／兩邊押同額」當餌誘我們複製大額
+        邊注。正常公式型下注金額帶尾數（如 12,900）、兩邊不同額。判定條件（全部可調）：
+
+          可疑整數格數 ≥ probe_min_round_cells（金額 ≥ probe_round_unit 且為其整數倍），
+          且（邊注格數 ≥ probe_spray_areas 灑網 或 有 ≥2 格金額完全相同 鏡像同額）。
+
+        回傳「本局判為試探」的對象名集合（呼叫端會把這些對象整局不跟）。同時累計
+        連續試探局數，達 probe_escalate_rounds 就升級（換房請求換桌／掛房停跟）。
+        """
+        bcfg = self.cfg.betting
+        if not getattr(bcfg, "probe_guard", True):
+            return set()
+        unit = max(1, int(getattr(bcfg, "probe_round_unit", 10000) or 10000))
+        min_round = max(1, int(getattr(bcfg, "probe_min_round_cells", 2) or 2))
+        spray_n = max(1, int(getattr(bcfg, "probe_spray_areas", 3) or 3))
+        use_mirror = bool(getattr(bcfg, "probe_mirror", True))
+        escalate = int(getattr(bcfg, "probe_escalate_rounds", 0) or 0)
+        probe_now: set[str] = set()
+        for name, bets in per_target_bets.items():
+            cells = [a for a in bets.values() if a > 0]
+            if not cells:
+                continue
+            round_cells = [a for a in cells if a >= unit and a % unit == 0]
+            spray = len(cells) >= spray_n
+            mirror = use_mirror and (len(cells) - len(set(cells)) > 0)
+            is_probe = len(round_cells) >= min_round and (spray or mirror)
+            if not is_probe:
+                if self._probe_streak.get(name):
+                    self._probe_streak[name] = 0  # 回到正常下注 → 連續計數歸零
+                continue
+            probe_now.add(name)
+            self._probe_streak[name] = self._probe_streak.get(name, 0) + 1
+            streak = self._probe_streak[name]
+            why = []
+            if spray:
+                why.append(f"灑{len(cells)}格")
+            if mirror:
+                why.append("鏡像同額")
+            logger.warning(
+                "反試探：「%s」本局判為試探（%s；整萬元 %d 格）→ 整局不跟（連續 %d 局）",
+                name, "＋".join(why) or "整數", len(round_cells), streak,
+            )
+            if escalate and streak >= escalate:
+                self._on_probe_escalate(name, streak)
+        return probe_now
+
+    def _on_probe_escalate(self, name: str, streak: int) -> None:
+        """同對象連續試探達門檻：換房 → 請求換桌；掛房 → 本次連線停跟此對象。"""
+        room = self._current_room()
+        tag = f"No.{room}" if room else "本桌"
+        if self.cfg.room.mode == "patrol":
+            self._probe_switch_requested = True
+            msg = f"🛑 追蹤對象「{name}」連續 {streak} 局試探放血（{tag}）→ 停跟並換桌"
+        else:
+            self._probe_blacklist.add(name)
+            msg = f"🛑 追蹤對象「{name}」連續 {streak} 局試探放血（{tag}）→ 本次連線停跟此對象"
+        logger.warning(msg)
+        self._notify_targets_gone(msg)
+        self._probe_streak[name] = 0
+
+    @staticmethod
+    def _strip_targets_from_plan(
+        plan: dict[str, int],
+        per_target_plan: dict[str, dict[str, int]],
+        names: set[str],
+    ) -> dict[str, int]:
+        """把指定對象（試探局／黑名單）對 plan 的貢獻扣掉。"""
+        out = dict(plan)
+        for name in names:
+            for bet_key, amt in per_target_plan.get(name, {}).items():
+                if bet_key in out:
+                    out[bet_key] -= amt
+                    if out[bet_key] <= 0:
+                        del out[bet_key]
+        return out
 
     def _filter_follow_plan(self, plan: dict[str, int]) -> dict[str, int]:
         """兩模式共用：濾掉「不跟」的下注區。莊/閒一律不跟（硬規則），
@@ -2047,6 +2141,11 @@ class FollowEngine:
                 )
                 if not present:
                     return "absent"
+                # 反試探升級：連續試探達門檻 → 立刻離桌換房（不黏在被放血的桌）。
+                if self._probe_switch_requested:
+                    self._probe_switch_requested = False
+                    logger.warning("No.%s 反試探升級 → 立刻換桌", cur)
+                    return "probe_switch"
                 if not plan:
                     # 對象有下注、但只下莊/閒（不是我們要跟的）→ 不黏桌，直接換。
                     if raw_areas & {"莊", "閒"}:
@@ -2101,6 +2200,9 @@ class FollowEngine:
                 continue
             if result == "timeout":
                 logger.info("No.%s 等下注窗口逾時，換下一桌", cur)
+                return "switch"
+            if result == "probe_switch":
+                logger.warning("No.%s 對象連續試探放血，立刻換下一桌", cur)
                 return "switch"
             # main_only（對象只下莊/閒）/ absent / no_bet：本局都「沒跟到」。
             # 莊/閒不算下注，故與 no_bet 一視同仁——算進「等兩局」的容忍，連續達門檻

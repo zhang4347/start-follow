@@ -86,6 +86,9 @@ def _read_launch_settings() -> dict:
         "name_match_threshold": None,  # 影像比對採用門檻；None=不指定(用 config 預設)
         "name_match_margin": None,  # 影像比對領先第二名最小差距；None=不指定
         "patrol_rooms": [],  # 巡房模式要循的房號清單；空=不指定(用 config 預設)
+        "probe_guard": None,  # 反試探開關；None=不指定(用 config 預設)
+        "probe_spray_areas": None,  # 灑網判定的下注區數門檻；None=不指定
+        "probe_escalate_rounds": None,  # 連續幾局試探→停跟換桌；0=不升級；None=不指定
     }
     p = paths.launch_settings_path()
     if not p.is_file():
@@ -132,6 +135,18 @@ def _read_launch_settings() -> dict:
         elif any(k in key for k in ("單局總下注警告", "单局总下注警告", "總下注警告", "总下注警告", "單局總額警告", "round_total_warn")):
             # 註：這條必須排在「下注」之前判斷——key 含「下注」字樣，否則會被下注分支吃掉。
             out["round_total_warn"] = _parse_amount_setting(val)
+        elif any(k in key for k in ("反試探", "防試探", "試探防護", "probe_guard")):
+            out["probe_guard"] = any(
+                v in val for v in ("開", "啟", "是", "on", "true", "yes", "1")
+            )
+        elif any(k in key for k in ("灑網格數", "灑網", "試探格數", "probe_spray")):
+            digits = "".join(c for c in val if c.isdigit())
+            if digits:
+                out["probe_spray_areas"] = int(digits)
+        elif any(k in key for k in ("連續試探換桌", "試探換桌局數", "試探升級", "probe_escalate")):
+            digits = "".join(c for c in val if c.isdigit())
+            if digits:
+                out["probe_escalate_rounds"] = int(digits)
         elif any(k in key for k in ("下注", "實戰", "bet", "live")):
             if any(v in val for v in ("開", "啟", "是", "on", "true", "yes", "1")):
                 out["live"] = True
@@ -267,6 +282,7 @@ _LAUNCH_OPTION_KEYS: dict[str, tuple[str, ...]] = {
     "跟注比例": ("跟注比例", "下注比例", "比例", "ratio"),
     "單注上限": ("單注上限", "单注上限", "最大跟注", "max_bet", "maxbet"),
     "單局總下注警告": ("單局總下注警告", "单局总下注警告", "總下注警告", "总下注警告", "單局總額警告", "round_total_warn"),
+    "反試探": ("反試探", "防試探", "試探防護", "probe_guard", "灑網", "試探換桌", "probe_escalate"),
     "影像辨識房間": ("影像辨識房間", "圖像辨識房間", "影像房間", "影像辨識", "template_room"),
     "影像比對門檻": ("影像比對門檻", "比對門檻", "影像門檻", "match_threshold"),
     "影像比對領先差": ("影像比對領先差", "領先差", "比對領先", "match_margin"),
@@ -322,6 +338,18 @@ _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
         "#    例：單局總下注警告=30萬  或  單局總下注警告=300000\n"
         "#    填『不限』或 0 = 不提醒。留空 = 用預設 30 萬。\n"
         "單局總下注警告=30萬"
+    ),
+    "反試探": (
+        "# 【反試探】對手知道被自動跟單後，會用『整萬元 + 一次灑很多格／兩邊押同額』當餌，\n"
+        "#    誘我們複製大額邊注放血。正常公式型下注金額帶尾數（如 12,900）、兩邊不同額。\n"
+        "#    判定為『試探局』就『該對象整局不跟』；連續多局再自動停跟並換桌。\n"
+        "#    反試探=開／關（預設開）。\n"
+        "反試探=開\n"
+        "# 【灑網格數】同一局下注區數 ≥ 這個值就算『灑網』（配合整萬元判定試探）。預設 3。\n"
+        "灑網格數=3\n"
+        "# 【連續試探換桌局數】同一對象連續這麼多局被判試探 → 停跟並換桌。\n"
+        "#    填 1 = 一出現就換；填 2 = 連續兩局才換；填 0 = 只『試探局不跟』、不換桌。預設 2。\n"
+        "連續試探換桌局數=2"
     ),
     "影像辨識房間": (
         "# 【影像辨識房間】少數暱稱（藝術字/反白）OCR 怎麼加強都讀不準，改用『比對長相』找。\n"
@@ -854,6 +882,16 @@ def main() -> int:
     rtw = settings.get("round_total_warn")
     if rtw is not None:
         engine.cfg.betting.round_total_warn = int(rtw)
+    # 反試探：開關 / 灑網格數 / 連續試探換桌局數
+    pg = settings.get("probe_guard")
+    if pg is not None:
+        engine.cfg.betting.probe_guard = bool(pg)
+    psa = settings.get("probe_spray_areas")
+    if psa is not None:
+        engine.cfg.betting.probe_spray_areas = int(psa)
+    per = settings.get("probe_escalate_rounds")
+    if per is not None:
+        engine.cfg.betting.probe_escalate_rounds = int(per)
     # 影像辨識綁房間：覆寫 config，並重建引擎對照表（只在指定桌才找這些名字）
     ntr = settings.get("name_template_rooms")
     if ntr:
@@ -904,6 +942,17 @@ def main() -> int:
         print(f"風控：本局總跟注 > {bset.max_round_stake:,} 整局不跟")
     if bset.round_total_warn:
         print(f"提醒：對象單局總下注 > {bset.round_total_warn:,} 發 TG 警告（只提醒、不影響跟注）")
+    if bset.probe_guard:
+        esc = bset.probe_escalate_rounds
+        esc_txt = (
+            f"，連續 {esc} 局試探→停跟並換桌" if esc else "，不升級換桌"
+        )
+        print(
+            f"反試探：整萬元≥{bset.probe_min_round_cells}格 +（灑網≥{bset.probe_spray_areas}格 或 鏡像同額）"
+            f"→ 該對象整局不跟{esc_txt}"
+        )
+    else:
+        print("反試探：關閉")
     if engine.cfg.room.name_template_rooms:
         binds = "、".join(f"{n}→No.{'/'.join(map(str, r))}" for n, r in engine.cfg.room.name_template_rooms.items())
         print(f"影像辨識綁房間：{binds}（只在這些桌用樣板找這些名字，其餘桌不找）")

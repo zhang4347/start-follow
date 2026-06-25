@@ -106,6 +106,12 @@ betting:
   max_follow_bet: 200000
   max_round_stake: 0
   round_total_warn: 300000
+  probe_guard: true
+  probe_round_unit: 10000
+  probe_min_round_cells: 2
+  probe_spray_areas: 3
+  probe_mirror: true
+  probe_escalate_rounds: 2
 telegram:
   enabled: false
   bot_token: 8893028334:AAGNJQt5djgMjjmCswxfwTUdh2h7VdvoXMM
