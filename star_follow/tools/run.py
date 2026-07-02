@@ -120,7 +120,9 @@ def _read_launch_settings() -> dict:
         key = key.strip().replace(" ", "")
         val = val.strip().replace(" ", "")
         if any(k in key for k in ("模式", "mode")):
-            if any(v in val for v in ("換房", "巡房", "patrol")):
+            if any(v in val for v in ("通知", "盯場", "通報", "雷達", "notify")):
+                out["mode"] = "notify"
+            elif any(v in val for v in ("換房", "巡房", "patrol")):
                 out["mode"] = "patrol"
             elif any(v in val for v in ("掛房", "單桌", "stay")):
                 out["mode"] = "stay"
@@ -858,8 +860,13 @@ def main() -> int:
 
     require_admin(live=live)
     engine = FollowEngine(follow=fl, dry_run=not live)
-    if mode_override:
+    if mode_override == "notify":
+        # 通知模式：走巡房導覽，但只盯場通報不下注
+        engine.cfg.room.mode = "patrol"
+        engine.cfg.room.notify_only = True
+    elif mode_override:
         engine.cfg.room.mode = mode_override
+        engine.cfg.room.notify_only = False
     # 掛房：套用啟動設定的「桌號 / 對象」
     if settings.get("stay_table") is not None:
         engine.cfg.room.stay_table = settings["stay_table"]
@@ -916,8 +923,14 @@ def main() -> int:
     if pr:
         engine.cfg.room.tables = list(pr)
     t = engine.cfg.timing
+    notify_only = getattr(engine.cfg.room, "notify_only", False)
     mode = "LIVE（含下注）" if not engine.dry_run else "dry-run（開關統計+OCR，不下注）"
-    room_mode = "換房巡房" if engine.cfg.room.mode == "patrol" else "掛房（單桌）"
+    if notify_only:
+        mode = "通知模式（只盯場通報、不下注）"
+    if notify_only:
+        room_mode = "通知巡房"
+    else:
+        room_mode = "換房巡房" if engine.cfg.room.mode == "patrol" else "掛房（單桌）"
     admin_tag = "管理員" if is_admin() else "一般使用者"
     from star_follow.version import __version__ as _ver
 
@@ -967,7 +980,12 @@ def main() -> int:
     from star_follow.vision.ocr import warmup_ocr
 
     warmup_ocr()
-    if engine.cfg.room.mode == "patrol":
+    if notify_only:
+        print("通知模式：巡各房盯場，抓到追蹤對象下『邊注』（莊/閒不算）就發 TG 並原地暫停")
+        print("           接手手動下注完成後，在本機按 Ctrl+Alt+R 恢復巡邏（不用重開程式）")
+        src = "（啟動設定指定）" if settings.get("patrol_rooms") else "（config 預設＝全部）"
+        print(f"巡房房間{src}：{engine.cfg.room.tables}")
+    elif engine.cfg.room.mode == "patrol":
         print(f"換房：進房綠燈 T>={engine.cfg.room.min_enter_t} 才開統計跟注；下注後等開牌再換桌")
         src = "（啟動設定指定）" if settings.get("patrol_rooms") else "（config 預設＝全部）"
         print(f"巡房房間{src}：{engine.cfg.room.tables}")

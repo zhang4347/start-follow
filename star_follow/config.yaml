@@ -43,6 +43,7 @@ safety:
   audit_screenshot: true
 room:
   mode: stay
+  notify_only: false
   tables:
   - 1
   - 2

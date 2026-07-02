@@ -88,6 +88,10 @@ class RoomConfig:
     """
 
     mode: str = "stay"  # "stay"=掛房, "patrol"=換房
+    # 通知模式：巡房走訪各房但「完全不下注」，偵測到追蹤對象下了邊注（莊/閒不算）就發
+    # Telegram 通知並「原地暫停」，等人工接手手動下注、按 Ctrl+Alt+R 恢復巡邏。
+    # 走巡房導覽，故啟用時 mode 會設為 "patrol"。
+    notify_only: bool = False
     tables: list[int] = field(
         default_factory=lambda: [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19]
     )
@@ -369,6 +373,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
         ),
         room=RoomConfig(
             mode=str(rm.get("mode", "stay")),
+            notify_only=bool(rm.get("notify_only", False)),
             tables=[int(x) for x in (rm.get("tables") or [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19])],
             min_enter_t=int(rm.get("min_enter_t", 8)),
             goto_x=int(rm.get("goto_x", 0)),
@@ -514,6 +519,7 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
     }
     data["room"] = {
         "mode": cfg.room.mode,
+        "notify_only": cfg.room.notify_only,
         "tables": cfg.room.tables,
         "min_enter_t": cfg.room.min_enter_t,
         "goto_x": cfg.room.goto_x,

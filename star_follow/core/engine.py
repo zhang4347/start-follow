@@ -65,6 +65,9 @@ class RoundContext:
     last_raw_bet_areas: set[str] = field(default_factory=set)
     # 本局已對哪些對象發過「單局總下注超標」TG 警告（每局每對象最多一次，避免洗版）。
     total_warn_names: set[str] = field(default_factory=set)
+    # 最近一次 _build_plan「過濾前」每個對象的實際下注分項（含莊/閒），供通知模式判斷
+    # 「對象下了哪些邊注」用。{對象名: {下注區: 金額}}
+    last_per_target_bets: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 class FollowEngine:
@@ -877,6 +880,11 @@ class FollowEngine:
         # 記錄「過濾前」對象實際下注的區域（含莊/閒），供換桌邏輯判斷對象是否
         # 只下莊/閒。
         self.ctx.last_raw_bet_areas = {area for area, amt in plan.items() if amt > 0}
+        # 供通知模式取用：每個對象的實際下注分項（含莊/閒，未過濾）。
+        self.ctx.last_per_target_bets = {k: dict(v) for k, v in per_target_bets.items()}
+        # 通知模式只盯場通報、不下注，跳過警告/反試探（反試探升級會停止引擎，通知模式不該觸發）。
+        if getattr(self.cfg.room, "notify_only", False):
+            return {}
         # 對象「單局總下注」超標 → 發 TG 警告（只提醒、不影響跟注）。
         self._warn_round_total(per_target_total, per_target_bets)
         # 反試探：判定「試探局」的對象，整局不跟（從 plan 扣掉其貢獻）；連續達門檻會在
@@ -2239,6 +2247,149 @@ class FollowEngine:
             self._patrol_wait_round_end()  # 留桌：等本局開完牌再看下一局
         return "switch"
 
+    # ---- 通知模式（只盯場通報、不下注）----------------------------------
+    def _notify_side_bets(self) -> tuple[str, str] | None:
+        """檢查本局有沒有追蹤對象下了『邊注』（莊/閒不算）。有 → 回 (對象名, 明細字串)。"""
+        per = getattr(self.ctx, "last_per_target_bets", {}) or {}
+        for name, bets in per.items():
+            side = {
+                area: amt
+                for area, amt in bets.items()
+                if amt > 0
+                and self.cfg.stats_to_bet.get(area, area) not in self._ALWAYS_EXCLUDE_FOLLOW
+                and area not in self._ALWAYS_EXCLUDE_FOLLOW
+            }
+            if side:
+                breakdown = "、".join(f"{area} {amt:,}" for area, amt in side.items())
+                return name, breakdown
+        return None
+
+    def _pause_for_manual(self, room: int | None, target: str, breakdown: str) -> None:
+        """通知模式偵測到對象下注：發 TG 並原地暫停，等人工按 Ctrl+Alt+R 恢復巡邏。"""
+        tag = f"No.{room}" if room else "本桌"
+        msg = (
+            f"🔔 追蹤對象「{target}」在 {tag} 開始下注了：{breakdown}\n"
+            "已暫停巡邏，請接手手動下注；完成後在本機按 Ctrl+Alt+R 恢復。"
+        )
+        logger.warning(msg)
+        self._notify_targets_gone(msg)
+        logger.info("已暫停，等待恢復熱鍵 Ctrl+Alt+R（本機按下即可繼續巡邏）…")
+        try:
+            import win32api  # pywin32（已打包）
+        except Exception:  # noqa: BLE001
+            win32api = None  # type: ignore[assignment]
+        VK_CTRL, VK_ALT, VK_R = 0x11, 0x12, 0x52
+        last_beat = time.monotonic()
+        while self._running:
+            if win32api is not None:
+                try:
+                    if (
+                        (win32api.GetAsyncKeyState(VK_CTRL) & 0x8000)
+                        and (win32api.GetAsyncKeyState(VK_ALT) & 0x8000)
+                        and (win32api.GetAsyncKeyState(VK_R) & 0x8000)
+                    ):
+                        logger.info("偵測到恢復熱鍵 Ctrl+Alt+R → 繼續巡邏")
+                        self._notify_targets_gone(f"▶️ {tag} 已恢復巡邏")
+                        time.sleep(0.6)  # 消抖，避免按鍵殘留
+                        return
+                except Exception:  # noqa: BLE001
+                    pass
+            now = time.monotonic()
+            if now - last_beat >= 60.0:
+                logger.info("仍暫停中…（%s，按 Ctrl+Alt+R 恢復）", tag)
+                last_beat = now
+            time.sleep(0.2)
+
+    def _patrol_notify_one_window(self, cur: int | None) -> str:
+        """盯本桌一個下注窗口：開表後持續刷新讀取，一旦對象下了邊注 → 關表、發 TG、暫停。
+
+        為抓到對方 T=2 的晚下注，讀取一路盯到接近封盤（不下注，故不必搶時間）。
+        回傳：'notified'（已通報並恢復） / 'no_bet'（本窗沒抓到邊注） / 'absent'（對象不在） /
+              'timeout'（等窗逾時）。
+        """
+        assert self._win is not None
+        win = self._win
+        rcfg = self.cfg.room
+        deadline = time.monotonic() + rcfg.result_wait_timeout_s
+        anchor_t: int | None = None
+        anchor_mono = 0.0
+        opened = False
+        last_log = 0.0
+        self.ctx = RoundContext()
+        while time.monotonic() < deadline and self._running:
+            if not opened:
+                t, color = self._effective_t(self._read_cd(capture_client(win)))
+                if color != CountdownColor.GREEN or t is None:
+                    time.sleep(0.2)
+                    continue
+                if t >= rcfg.min_enter_t:
+                    anchor_t = t
+                    anchor_mono = time.monotonic()
+                if anchor_t is None:
+                    time.sleep(0.2)
+                    continue
+                if not self._open_stats_menu():
+                    self._force_close_stats(capture_client(win), reason="通知開統計失敗")
+                    return "timeout"
+                self._position_stats_for_read()
+                opened = True
+                self._patrol_prelocate(capture_client(win))
+                if not self.ctx.resolved_columns:
+                    if not self._close_stats_panel(capture_client(win)):
+                        self._force_close_stats(capture_client(win), reason="通知對象不在")
+                    return "absent"
+                continue
+
+            t_now = max(0, anchor_t - int(time.monotonic() - anchor_mono))
+            self._position_stats_for_read()
+            # 輪詢偵測不捲動（避免反覆捲表卡頓）；抓到任一邊注即可，不需最底列細節。
+            self._build_plan(capture_client(win), refresh_only=True, include_scroll=False)
+            hit = self._notify_side_bets()
+            if hit:
+                target, breakdown = hit
+                if not self._close_stats_panel(capture_client(win)):
+                    self._force_close_stats(capture_client(win), reason="通知關表")
+                self._pause_for_manual(cur, target, breakdown)
+                return "notified"
+            if t_now <= 1:
+                # 窗口快封盤、仍沒讀到邊注 → 這局沒抓到
+                if not self._close_stats_panel(capture_client(win)):
+                    self._force_close_stats(capture_client(win), reason="通知定稿關表")
+                return "no_bet"
+            now = time.monotonic()
+            if now - last_log >= 5.0:
+                logger.info("No.%s 通知盯場中（時鐘 T≈%s）", cur, t_now)
+                last_log = now
+            time.sleep(0.4)
+        return "timeout"
+
+    def _patrol_notify_table(self, cur: int | None) -> str:
+        """通知模式：進到本桌先確認對象在不在；在就盯場，抓到對象下邊注就通報＋暫停，
+        連續幾局沒抓到（或對象不在）就換下一桌繼續巡。"""
+        present, _ = self._patrol_scan_table()
+        if not present:
+            logger.info("No.%s 無追蹤對象，換下一桌", cur)
+            return "switch"
+        leave_after = max(1, self.cfg.room.patrol_leave_after_idle)
+        logger.info("No.%s 有追蹤對象，盯場（不下注，抓到下邊注就通報並暫停）", cur)
+        idle = 0
+        while self._running:
+            result = self._patrol_notify_one_window(cur)
+            if result == "notified":
+                idle = 0
+                self._patrol_wait_round_end()  # 恢復後等本局開完牌再看下一局
+                continue
+            if result in ("timeout", "absent"):
+                logger.info("No.%s 盯場結束（%s），換下一桌", cur, result)
+                return "switch"
+            idle += 1
+            logger.info("No.%s 本局沒抓到邊注，連續 %d/%d 局", cur, idle, leave_after)
+            if idle >= leave_after:
+                logger.info("No.%s 連續 %d 局沒抓到，換下一桌", cur, idle)
+                return "switch"
+            self._patrol_wait_round_end()
+        return "switch"
+
     def _patrol_wait_round_end(self) -> None:
         """下注後等本局開完牌：等到倒數先結束（非綠燈／開牌中），再重新出現新的
         下注窗口（綠燈且 T 夠大）為止——代表本局已結算，這時離桌才不會影響本注。
@@ -2359,7 +2510,10 @@ class FollowEngine:
         #   有 → 黏桌持續跟注，到對象某局沒下邊注才換桌（在 _patrol_visit_table 內處理）
         #   沒有 → 直接換下一桌
         logger.info("進入 No.%s，開統計表檢查追蹤對象", self._patrol_current)
-        self._patrol_visit_table(self._patrol_current)
+        if getattr(self.cfg.room, "notify_only", False):
+            self._patrol_notify_table(self._patrol_current)
+        else:
+            self._patrol_visit_table(self._patrol_current)
 
         if not self._patrol_advance(self._patrol_current):
             logger.warning("找不到可換的桌（巡防範圍內多半都滿桌），稍候再試")
