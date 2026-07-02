@@ -2264,47 +2264,18 @@ class FollowEngine:
                 return name, breakdown
         return None
 
-    def _pause_for_manual(self, room: int | None, target: str, breakdown: str) -> None:
-        """通知模式偵測到對象下注：發 TG 並原地暫停，等人工按 Ctrl+Alt+R 恢復巡邏。"""
+    def _notify_bet(self, room: int | None, target: str, breakdown: str) -> None:
+        """通知模式偵測到對象下注：發 TG 報馬仔（不下注、不暫停，繼續巡）。"""
         tag = f"No.{room}" if room else "本桌"
-        msg = (
-            f"🔔 追蹤對象「{target}」在 {tag} 開始下注了：{breakdown}\n"
-            "已暫停巡邏，請接手手動下注；完成後在本機按 Ctrl+Alt+R 恢復。"
-        )
+        msg = f"🔔 追蹤對象「{target}」在 {tag} 開始下注了：{breakdown}"
         logger.warning(msg)
         self._notify_targets_gone(msg)
-        logger.info("已暫停，等待恢復熱鍵 Ctrl+Alt+R（本機按下即可繼續巡邏）…")
-        try:
-            import win32api  # pywin32（已打包）
-        except Exception:  # noqa: BLE001
-            win32api = None  # type: ignore[assignment]
-        VK_CTRL, VK_ALT, VK_R = 0x11, 0x12, 0x52
-        last_beat = time.monotonic()
-        while self._running:
-            if win32api is not None:
-                try:
-                    if (
-                        (win32api.GetAsyncKeyState(VK_CTRL) & 0x8000)
-                        and (win32api.GetAsyncKeyState(VK_ALT) & 0x8000)
-                        and (win32api.GetAsyncKeyState(VK_R) & 0x8000)
-                    ):
-                        logger.info("偵測到恢復熱鍵 Ctrl+Alt+R → 繼續巡邏")
-                        self._notify_targets_gone(f"▶️ {tag} 已恢復巡邏")
-                        time.sleep(0.6)  # 消抖，避免按鍵殘留
-                        return
-                except Exception:  # noqa: BLE001
-                    pass
-            now = time.monotonic()
-            if now - last_beat >= 60.0:
-                logger.info("仍暫停中…（%s，按 Ctrl+Alt+R 恢復）", tag)
-                last_beat = now
-            time.sleep(0.2)
 
     def _patrol_notify_one_window(self, cur: int | None) -> str:
-        """盯本桌一個下注窗口：開表後持續刷新讀取，一旦對象下了邊注 → 關表、發 TG、暫停。
+        """盯本桌一個下注窗口：開表後持續刷新讀取，一旦對象下了邊注 → 關表、發 TG 通報。
 
         為抓到對方 T=2 的晚下注，讀取一路盯到接近封盤（不下注，故不必搶時間）。
-        回傳：'notified'（已通報並恢復） / 'no_bet'（本窗沒抓到邊注） / 'absent'（對象不在） /
+        回傳：'notified'（已通報） / 'no_bet'（本窗沒抓到邊注） / 'absent'（對象不在） /
               'timeout'（等窗逾時）。
         """
         assert self._win is not None
@@ -2349,7 +2320,7 @@ class FollowEngine:
                 target, breakdown = hit
                 if not self._close_stats_panel(capture_client(win)):
                     self._force_close_stats(capture_client(win), reason="通知關表")
-                self._pause_for_manual(cur, target, breakdown)
+                self._notify_bet(cur, target, breakdown)
                 return "notified"
             if t_now <= 1:
                 # 窗口快封盤、仍沒讀到邊注 → 這局沒抓到
@@ -2364,21 +2335,23 @@ class FollowEngine:
         return "timeout"
 
     def _patrol_notify_table(self, cur: int | None) -> str:
-        """通知模式：進到本桌先確認對象在不在；在就盯場，抓到對象下邊注就通報＋暫停，
-        連續幾局沒抓到（或對象不在）就換下一桌繼續巡。"""
+        """通知模式：進到本桌先確認對象在不在；在就盯場，抓到對象下邊注就發 TG 通報，
+        接著換下一桌繼續巡（不暫停、不黏桌）——因為可能同時有好幾桌在下，要盡量把
+        每一桌都掃過去通報；之後巡回本桌時若還在下，會再報一次（繼續報沒關係）。
+        連續幾局沒抓到（或對象不在）就換下一桌。"""
         present, _ = self._patrol_scan_table()
         if not present:
             logger.info("No.%s 無追蹤對象，換下一桌", cur)
             return "switch"
         leave_after = max(1, self.cfg.room.patrol_leave_after_idle)
-        logger.info("No.%s 有追蹤對象，盯場（不下注，抓到下邊注就通報並暫停）", cur)
+        logger.info("No.%s 有追蹤對象，盯場（不下注，抓到下邊注就 TG 通報後換桌繼續巡）", cur)
         idle = 0
         while self._running:
             result = self._patrol_notify_one_window(cur)
             if result == "notified":
-                idle = 0
-                self._patrol_wait_round_end()  # 恢復後等本局開完牌再看下一局
-                continue
+                logger.info("No.%s 已通報，換下一桌繼續巡", cur)
+                self._patrol_wait_round_end()  # 等本局開完牌再離桌，避免影響畫面判讀
+                return "switch"
             if result in ("timeout", "absent"):
                 logger.info("No.%s 盯場結束（%s），換下一桌", cur, result)
                 return "switch"

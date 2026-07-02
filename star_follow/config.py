@@ -89,8 +89,8 @@ class RoomConfig:
 
     mode: str = "stay"  # "stay"=掛房, "patrol"=換房
     # 通知模式：巡房走訪各房但「完全不下注」，偵測到追蹤對象下了邊注（莊/閒不算）就發
-    # Telegram 通知並「原地暫停」，等人工接手手動下注、按 Ctrl+Alt+R 恢復巡邏。
-    # 走巡房導覽，故啟用時 mode 會設為 "patrol"。
+    # Telegram 通知（誰在哪一房開始下注了＋明細），接著換下一桌繼續巡（不暫停、不黏桌）。
+    # 由人工用別台/別帳號手動下注。走巡房導覽，故啟用時 mode 會設為 "patrol"。
     notify_only: bool = False
     tables: list[int] = field(
         default_factory=lambda: [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19]

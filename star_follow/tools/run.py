@@ -981,8 +981,8 @@ def main() -> int:
 
     warmup_ocr()
     if notify_only:
-        print("通知模式：巡各房盯場，抓到追蹤對象下『邊注』（莊/閒不算）就發 TG 並原地暫停")
-        print("           接手手動下注完成後，在本機按 Ctrl+Alt+R 恢復巡邏（不用重開程式）")
+        print("通知模式：巡各房盯場、不下注，抓到追蹤對象下『邊注』（莊/閒不算）就發 TG 報馬仔")
+        print("           告訴你『誰在哪一房開始下注了＋明細』，你自己用別台/別帳號手動下")
         src = "（啟動設定指定）" if settings.get("patrol_rooms") else "（config 預設＝全部）"
         print(f"巡房房間{src}：{engine.cfg.room.tables}")
     elif engine.cfg.room.mode == "patrol":
