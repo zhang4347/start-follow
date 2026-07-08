@@ -146,8 +146,7 @@ class FollowEngine:
         self._prev_plan_table: int | None = None
         # 掛房：首次追到對象但他那局沒下邊注 → 下一局補防踢保險（原「首次保險閒注」延後版）
         self._prev_first_track_insurance = False
-        self._reveal_gone_streak = 0  # WAIT_REVEAL：連續幾次讀不到倒數（確認真的封盤）
-        self._reveal_saw_gone = False
+        self._reveal_gone_streak = 0  # WAIT_REVEAL：連續讀不到倒數的次數（無軟體時鐘時的退路）
         # 影像辨識綁房間：{正規化暱稱: {桌號,...}}（只在這些桌才找該名字）。
         self._tmpl_room_binding: dict[str, set[int]] = {}
         self.reload_template_room_binding()
@@ -1323,7 +1322,6 @@ class FollowEngine:
             round_start_mono=time.perf_counter(),
         )
         self._reveal_gone_streak = 0
-        self._reveal_saw_gone = False
         if (
             self.cfg.timing.software_countdown
             and not self._cd_tracker.anchored
@@ -1374,8 +1372,10 @@ class FollowEngine:
     def _stay_wait_reveal_step(self, ocr_t: int | None, ocr_color: CountdownColor) -> None:
         """WAIT_REVEAL（掛房）：等 T 數完 1 之後（倒數數字消失）才讀本局、存給下一局。
 
-        觸發條件（防單次 OCR 誤讀而提早讀到「可收回」的金額）：
-        軟體時鐘走到 0 且螢幕倒數已消失，或連續 3 次讀不到倒數。
+        觸發條件：軟體時鐘數完（≤0）「且」螢幕倒數數字已消失。
+        不能只靠「連續讀不到數字」——遊戲在 T≈9~10 會播『下好離手』過場動畫把倒數
+        蓋住 1 秒多，會被誤判成封盤而提早開表（讀到還能收回的金額，實測踩過）。
+        軟體時鐘在開盤時已錨定且會與 OCR 自動校正，是可靠的硬條件。
         """
         timing = self.cfg.timing
         sw_t: int | None = None
@@ -1384,7 +1384,6 @@ class FollowEngine:
         gone = ocr_t is None and ocr_color != CountdownColor.GREEN
         if gone:
             self._reveal_gone_streak += 1
-            self._reveal_saw_gone = True
         else:
             self._reveal_gone_streak = 0
         rs = self.ctx.round_start_mono or time.perf_counter()
@@ -1393,9 +1392,11 @@ class FollowEngine:
             logger.warning("等開牌逾時（%.0fs），本局放棄讀取", waited)
             self._enter_locked(note="等開牌逾時，等待下一局")
             return
-        # 防漏接：倒數曾消失後又出現「下一局的大 T 綠燈」→ 本局讀取沒趕上，放棄
+        sw_done = sw_t is not None and sw_t <= 0
+        # 防漏接：時鐘已數完、卻出現「下一局的大 T 綠燈」→ 本局讀取沒趕上，放棄。
+        # （時鐘還在走時的綠燈是本局自己，OCR 短暫閃爍不會誤判。）
         if (
-            self._reveal_saw_gone
+            sw_done
             and ocr_color == CountdownColor.GREEN
             and ocr_t is not None
             and ocr_t >= self._min_start_t()
@@ -1403,8 +1404,11 @@ class FollowEngine:
             logger.warning("開牌讀取沒趕上、已進下一局 → 本局放棄讀取")
             self._enter_locked(note="開牌讀取沒趕上")
             return
-        sw_done = sw_t is not None and sw_t <= 0
-        if not ((sw_done and gone) or self._reveal_gone_streak >= 3):
+        if sw_t is None:
+            # 沒有軟體時鐘（異常情況）才退回保守作法：連續很多次讀不到才算封盤
+            if self._reveal_gone_streak < 8:
+                return
+        elif not (sw_done and gone):
             return
         time.sleep(1.0)  # 開牌起始緩衝（確定已過 T=1、金額鎖死）
         plan, _present, _raw = self._reveal_read_plan()
@@ -2414,11 +2418,17 @@ class FollowEngine:
         deadline = time.monotonic() + rcfg.result_wait_timeout_s
         saw_green = False
         gone_streak = 0
+        # 「最後一次讀到倒數數字」的值與時間：推算剩餘秒。判封盤不能只靠「讀不到數字」
+        # ——遊戲 T≈9~10 的『下好離手』動畫會蓋住倒數 1 秒多，會誤判提早開表。
+        last_t: int | None = None
+        last_t_mono = 0.0
         self.ctx = RoundContext()
         while time.monotonic() < deadline and self._running:
             frame = capture_client(win)
             cd = self._read_cd(frame)
             t, color = cd.seconds, cd.color  # 表全程沒開、倒數看得到 → 直接用真實 OCR
+            if t is not None:
+                last_t, last_t_mono = t, time.monotonic()  # 綠/紅數字都算（紅=最後 3 秒）
             if color == CountdownColor.GREEN and t is not None:
                 gone_streak = 0
                 if not saw_green:
@@ -2440,10 +2450,14 @@ class FollowEngine:
             if not saw_green:
                 time.sleep(0.25)  # 開牌／過場中進桌：等下一個下注窗
                 continue
-            # 已看過綠燈、現在讀不到倒數 → 連續確認真的封盤（防單次 OCR 漏讀）
+            # 已看過綠燈、現在讀不到倒數 → 用「最後讀到的數字」推算剩餘秒，
+            # 剩餘 <=1 且連續兩次讀不到才算真的封盤（動畫蓋住時剩餘還很大，不會誤觸發）。
             if t is None and color != CountdownColor.GREEN:
                 gone_streak += 1
-                if gone_streak >= 3:
+                est = None
+                if last_t is not None:
+                    est = last_t - (time.monotonic() - last_t_mono)
+                if est is not None and est <= 1.0 and gone_streak >= 2:
                     time.sleep(1.0)  # 開牌起始緩衝（已過 T=1、金額鎖死）
                     plan, present, raw = self._reveal_read_plan()
                     if not present:
