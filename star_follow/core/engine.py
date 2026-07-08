@@ -43,6 +43,9 @@ class Phase(Enum):
     BET_OPEN = auto()
     STATS_READY = auto()
     LOCKED = auto()
+    # 【跟上一局】開盤已下完（或無計畫），等倒數走完（T 數完 1 之後、進入開牌）
+    # 才開統計表讀「對象本局實際下注」，存給下一局。
+    WAIT_REVEAL = auto()
 
 
 @dataclass
@@ -138,6 +141,13 @@ class FollowEngine:
         self._probe_streak: dict[str, int] = {}
         self._probe_blacklist: set[str] = set()  # 掛房不能換桌時，本次連線停跟的對象
         self._probe_switch_requested = False      # 換房：偵測到連續試探，請求換桌
+        # 【跟上一局】上一局讀到的跟注計畫（下一局開盤照下）；table=計畫所屬桌號。
+        self._prev_plan: dict[str, int] = {}
+        self._prev_plan_table: int | None = None
+        # 掛房：首次追到對象但他那局沒下邊注 → 下一局補防踢保險（原「首次保險閒注」延後版）
+        self._prev_first_track_insurance = False
+        self._reveal_gone_streak = 0  # WAIT_REVEAL：連續幾次讀不到倒數（確認真的封盤）
+        self._reveal_saw_gone = False
         # 影像辨識綁房間：{正規化暱稱: {桌號,...}}（只在這些桌才找該名字）。
         self._tmpl_room_binding: dict[str, set[int]] = {}
         self.reload_template_room_binding()
@@ -181,6 +191,9 @@ class FollowEngine:
 
     def _begin_round(self, start_t: int, frame=None) -> None:
         assert self._win is not None
+        if self._follow_prev_enabled():
+            self._begin_round_prev(start_t, frame=frame)
+            return
         t0 = time.perf_counter()
         self._late_skip_logged = False
         self.phase = Phase.BET_OPEN
@@ -889,10 +902,12 @@ class FollowEngine:
         self._warn_round_total(per_target_total, per_target_bets)
         # 反試探：判定「試探局」的對象，整局不跟（從 plan 扣掉其貢獻）；連續達門檻會在
         # _detect_probe 內升級為停跟＋換桌。掛房黑名單對象也一併扣掉。
-        probe_now = self._detect_probe(per_target_bets)
-        strip = set(probe_now) | (self._probe_blacklist & set(per_target_plan))
-        if strip:
-            plan = self._strip_targets_from_plan(plan, per_target_plan, strip)
+        # 【跟上一局】模式不需要：讀取在封盤後、金額已鎖死，對方假下注收回騙不到我們。
+        if not self._follow_prev_enabled():
+            probe_now = self._detect_probe(per_target_bets)
+            strip = set(probe_now) | (self._probe_blacklist & set(per_target_plan))
+            if strip:
+                plan = self._strip_targets_from_plan(plan, per_target_plan, strip)
         plan = self._filter_follow_plan(plan)
         plan = self._risk_filter_plan(plan)
         plan = self._scale_follow_plan(plan)
@@ -1223,6 +1238,184 @@ class FollowEngine:
         if cd_color == CountdownColor.RED and t <= 3:
             return False
         return t >= self.cfg.timing.min_bet_t
+
+    # ====================== 跟上一局（上局讀 → 本局下） ======================
+    def _follow_prev_enabled(self) -> bool:
+        """【跟上一局】是否啟用：對方超晚下注（T=2）跟本局來不及，改成「封盤後/開牌中」
+        讀他這局實際下了什麼（金額已鎖死），下一局一開盤就照著下。通知模式不適用。"""
+        if getattr(self.cfg.room, "notify_only", False):
+            return False
+        return bool(getattr(self.cfg.betting, "follow_prev_round", False))
+
+    def _check_new_shoe(self, frame) -> bool:
+        """珠盤路全白（無任何紅/藍珠）→ 新的一條牌。只能在統計表『關著』時呼叫
+        （表會蓋住珠盤路）。讀不到 ROI 一律回 False（寧可跟、不誤丟）。"""
+        if "bead_plate" not in self.cfg.roi:
+            return False
+        try:
+            from star_follow.vision.roadmap import bead_colored_fraction
+
+            rect = self._scale_rect("bead_plate")
+            frac = bead_colored_fraction(frame, rect)
+        except Exception:  # noqa: BLE001
+            return False
+        thr = float(getattr(self.cfg.betting, "new_shoe_bead_threshold", 0.003) or 0.003)
+        if frac < thr:
+            logger.info("珠盤路顏色佔比 %.4f < %.4f → 新的一條牌（空盤）", frac, thr)
+            return True
+        return False
+
+    def _store_prev_plan(self, plan: dict[str, int], table: int | None) -> None:
+        self._prev_plan = dict(plan)
+        self._prev_plan_table = table
+        if plan:
+            logger.info("已存好下一局的跟注計畫（跟上一局）：%s", plan)
+
+    def _consume_prev_plan(self, table: int | None) -> dict[str, int]:
+        """取出「上一局存的計畫」並清空。換了桌（計畫不屬於本桌）就作廢。"""
+        plan, plan_table = self._prev_plan, self._prev_plan_table
+        self._prev_plan, self._prev_plan_table = {}, None
+        if plan and plan_table != table:
+            logger.info("上一局計畫屬於 No.%s、目前在 No.%s → 作廢不跟", plan_table, table)
+            return {}
+        return dict(plan)
+
+    def _reveal_read_plan(self) -> tuple[dict[str, int], bool, set[str]]:
+        """開牌中開統計表讀「對象本局實際下注」→ (計畫, 對象在桌, 原始下注區含莊閒)。
+
+        此時金額已鎖死（封盤後不能改），辨識最穩、時間也最充裕。讀完關表。
+        讀失敗（開表失敗等）回 ({}, False, set())，且 header_name_count=0 →
+        掛房離桌判定不會誤計。
+        """
+        assert self._win is not None
+        win = self._win
+        # 防呆：若綠燈倒數又出現（誤判封盤／已進下一局），放棄本次讀取
+        cd = self._read_cd(capture_client(win))
+        if cd.color == CountdownColor.GREEN and cd.seconds is not None and cd.seconds > 2:
+            logger.warning("開牌讀取前發現仍在下注窗（T=%s），放棄本次讀取", cd.seconds)
+            return {}, False, set()
+        if not self._open_stats_menu():
+            self._force_close_stats(capture_client(win), reason="開牌讀取開表失敗")
+            return {}, False, set()
+        self._position_stats_for_read()
+        frame = capture_client(win)
+        # 先用欄位快取做快速定位（驗證單欄→失效才整排重掃）
+        self._patrol_prelocate(frame)
+        frame = capture_client(win)
+        refresh = bool(self.ctx.resolved_columns)
+        # 對象定位失敗時走整排全掃（較慢但會數表頭名字→掛房離桌判定用；開牌中時間夠）
+        plan = self._build_plan(frame, refresh_only=refresh, include_scroll=True)
+        self.ctx.ocr_done = True
+        present = bool(self.ctx.resolved_columns)
+        raw = set(self.ctx.last_raw_bet_areas)
+        if not self._close_stats_panel(capture_client(win)):
+            self._force_close_stats(capture_client(win), reason="開牌讀取關表")
+        return plan, present, raw
+
+    def _begin_round_prev(self, start_t: int, frame=None) -> None:
+        """【跟上一局】開盤：不開統計表，直接下「上一局存好的計畫」；沒計畫則照原
+        防踢規則補注。之後轉 WAIT_REVEAL 等倒數走完才讀本局、存給下一局。"""
+        assert self._win is not None
+        self._late_skip_logged = False
+        self.ctx = RoundContext(
+            last_t=start_t,
+            round_start_t=start_t,
+            round_start_mono=time.perf_counter(),
+        )
+        self._reveal_gone_streak = 0
+        self._reveal_saw_gone = False
+        if (
+            self.cfg.timing.software_countdown
+            and not self._cd_tracker.anchored
+            and start_t is not None
+        ):
+            self._cd_tracker.force_anchor(start_t)
+        logger.info("開盤 T=%s（跟上一局：先下上局計畫，開牌中才讀本局）", start_t)
+        focus_window(self._win.hwnd)
+        if frame is None:
+            frame = capture_client(self._win)
+        self._prepare_round_ui(frame)  # 清掉殘留統計表（之後珠盤路才看得到）
+        frame = capture_client(self._win)
+        plan = self._consume_prev_plan(self._current_room())
+        if plan and self._check_new_shoe(frame):
+            logger.info("新的一條牌 → 上一局計畫作廢，本局不跟")
+            plan = {}
+        t_now, cd_color = self._effective_t()
+        bet_done = False
+        if plan:
+            if not self._can_bet_now(t_now, cd_color):
+                logger.info("已過可下注時間 T=%s，放棄下上一局計畫", t_now)
+            elif self._safety_allows_bet(plan):
+                self.ctx.plan = plan
+                logger.info("照上一局計畫下注：%s（T=%s）", plan, t_now)
+                BetExecutor(self.cfg, self._win, dry_run=self.dry_run).execute(plan)
+                stake = sum(v for v in plan.values() if v > 0)
+                self._session_rounds += 1
+                self._session_stake += stake
+                self._stay_idle_rounds = 0
+                logger.info(
+                    "本局下注 %d，累計 %d 局 / %d", stake, self._session_rounds, self._session_stake
+                )
+                self._save_round(frame, t_now, bet=True)
+                self._audit_after_bet(t_now)
+                self._ui_fail_streak = 0
+                bet_done = True
+        if not bet_done:
+            if self._prev_first_track_insurance:
+                self._prev_first_track_insurance = False
+                bet_done = self._maybe_first_track_insurance(frame, t_now, cd_color)
+            if not bet_done:
+                if self._should_count_stay_idle():
+                    self._stay_idle_rounds += 1
+                    logger.info("本局沒有上一局計畫可下（連續未下注 %d 局）", self._stay_idle_rounds)
+                self._maybe_anti_kick(frame, t_now, cd_color)
+        self.phase = Phase.WAIT_REVEAL
+
+    def _stay_wait_reveal_step(self, ocr_t: int | None, ocr_color: CountdownColor) -> None:
+        """WAIT_REVEAL（掛房）：等 T 數完 1 之後（倒數數字消失）才讀本局、存給下一局。
+
+        觸發條件（防單次 OCR 誤讀而提早讀到「可收回」的金額）：
+        軟體時鐘走到 0 且螢幕倒數已消失，或連續 3 次讀不到倒數。
+        """
+        timing = self.cfg.timing
+        sw_t: int | None = None
+        if timing.software_countdown and self._cd_tracker.anchored:
+            sw_t = self._cd_tracker._estimate()  # noqa: SLF001 軟體時鐘剩餘秒（0=已數完）
+        gone = ocr_t is None and ocr_color != CountdownColor.GREEN
+        if gone:
+            self._reveal_gone_streak += 1
+            self._reveal_saw_gone = True
+        else:
+            self._reveal_gone_streak = 0
+        rs = self.ctx.round_start_mono or time.perf_counter()
+        waited = time.perf_counter() - rs
+        if waited >= 75.0:
+            logger.warning("等開牌逾時（%.0fs），本局放棄讀取", waited)
+            self._enter_locked(note="等開牌逾時，等待下一局")
+            return
+        # 防漏接：倒數曾消失後又出現「下一局的大 T 綠燈」→ 本局讀取沒趕上，放棄
+        if (
+            self._reveal_saw_gone
+            and ocr_color == CountdownColor.GREEN
+            and ocr_t is not None
+            and ocr_t >= self._min_start_t()
+        ):
+            logger.warning("開牌讀取沒趕上、已進下一局 → 本局放棄讀取")
+            self._enter_locked(note="開牌讀取沒趕上")
+            return
+        sw_done = sw_t is not None and sw_t <= 0
+        if not ((sw_done and gone) or self._reveal_gone_streak >= 3):
+            return
+        time.sleep(1.0)  # 開牌起始緩衝（確定已過 T=1、金額鎖死）
+        plan, _present, _raw = self._reveal_read_plan()
+        first_track = self._mark_first_track_success()
+        self._update_stay_presence()
+        if first_track and not plan:
+            self._prev_first_track_insurance = True
+        self._store_prev_plan(plan, self._current_room())
+        if not plan:
+            logger.info("本局對象沒下可跟的邊注（或不在），下一局不跟")
+        self._enter_locked(note="開牌讀取完成，等待下一局")
 
     def _finalize_at_ocr(self, frame, t: int | None, cd: CountdownState) -> None:
         """定稿：刷新金額 → 關表 → 跟注（完成後重新取 T）。"""
@@ -1620,7 +1813,7 @@ class FollowEngine:
         )
 
     def _in_active_betting_phase(self) -> bool:
-        return self.phase in (Phase.BET_OPEN, Phase.STATS_READY, Phase.LOCKED)
+        return self.phase in (Phase.BET_OPEN, Phase.STATS_READY, Phase.LOCKED, Phase.WAIT_REVEAL)
 
     def _lobby_nav_interval_s(self) -> float:
         raw = self.cfg.raw.get("nav_confirm")
@@ -1756,7 +1949,9 @@ class FollowEngine:
         ocr_color = cd_ocr.color
         cd = cd_ocr
         if timing.software_countdown:
-            if self.phase != Phase.LOCKED:
+            # WAIT_REVEAL 不重錨定：下一局的綠燈 T=20 會把時鐘拉回 20，害「等倒數走完」
+            # 的判斷永遠等不到 0。
+            if self.phase not in (Phase.LOCKED, Phase.WAIT_REVEAL):
                 self._cd_tracker.try_anchor(cd_ocr)
             t, cd_color = self._cd_tracker.effective(cd_ocr)
             cd = CountdownState(
@@ -1808,6 +2003,11 @@ class FollowEngine:
                 self._last_idle_cleanup_mono = time.perf_counter()
             if self.phase == Phase.IDLE:
                 return True
+
+        if self.phase == Phase.WAIT_REVEAL:
+            # 【跟上一局】等倒數走完（T 數完 1 之後）→ 開牌中讀本局、存給下一局
+            self._stay_wait_reveal_step(ocr_t, ocr_color)
+            return True
 
         if self.phase == Phase.BET_OPEN:
             t, cd_color, cd = self._refresh_effective_countdown()
@@ -2200,10 +2400,114 @@ class FollowEngine:
         logger.info("等下注窗口逾時（%.0fs），放棄 No.%s", rcfg.result_wait_timeout_s, cur)
         return "timeout"
 
+    def _patrol_prev_round_window(self, cur: int | None) -> str:
+        """【跟上一局】巡防的一局：開盤先照「上一局存的計畫」下注（不開統計表，快又早，
+        對方收不回）；等倒數走完（T 數完 1 之後、數字消失）才開表讀對象本局實際下注，
+        存給下一局。
+
+        回傳：'stored' 對象本局有下邊注（已存好下一局計畫）/ 'main_only' 只下莊/閒 /
+              'no_bet' 沒讀到下注 / 'absent' 對象不在 / 'timeout' 等窗逾時。
+        """
+        assert self._win is not None
+        win = self._win
+        rcfg = self.cfg.room
+        deadline = time.monotonic() + rcfg.result_wait_timeout_s
+        saw_green = False
+        gone_streak = 0
+        self.ctx = RoundContext()
+        while time.monotonic() < deadline and self._running:
+            frame = capture_client(win)
+            cd = self._read_cd(frame)
+            t, color = cd.seconds, cd.color  # 表全程沒開、倒數看得到 → 直接用真實 OCR
+            if color == CountdownColor.GREEN and t is not None:
+                gone_streak = 0
+                if not saw_green:
+                    saw_green = True
+                    # 下注窗開了：珠盤路可見（表沒開）→ 先驗新靴，再下上一局計畫
+                    plan = self._consume_prev_plan(cur)
+                    if plan and self._check_new_shoe(frame):
+                        logger.info("No.%s 新的一條牌 → 上一局計畫作廢，本局不跟", cur)
+                        plan = {}
+                    if plan:
+                        if not self._can_bet_now(t, color):
+                            logger.info("No.%s 進窗太晚（T=%s），放棄下上一局計畫", cur, t)
+                        elif self._safety_allows_bet(plan):
+                            self.ctx.plan = plan
+                            logger.info("No.%s 照上一局計畫下注：%s（T=%s）", cur, plan, t)
+                            self._patrol_place(plan, t)
+                time.sleep(0.25)
+                continue
+            if not saw_green:
+                time.sleep(0.25)  # 開牌／過場中進桌：等下一個下注窗
+                continue
+            # 已看過綠燈、現在讀不到倒數 → 連續確認真的封盤（防單次 OCR 漏讀）
+            if t is None and color != CountdownColor.GREEN:
+                gone_streak += 1
+                if gone_streak >= 3:
+                    time.sleep(1.0)  # 開牌起始緩衝（已過 T=1、金額鎖死）
+                    plan, present, raw = self._reveal_read_plan()
+                    if not present:
+                        return "absent"
+                    self._store_prev_plan(plan, cur)
+                    if plan:
+                        return "stored"
+                    if raw & {"莊", "閒"}:
+                        return "main_only"
+                    return "no_bet"
+            else:
+                gone_streak = 0
+            time.sleep(0.25)
+        logger.info("等下注窗口逾時（%.0fs），放棄 No.%s", rcfg.result_wait_timeout_s, cur)
+        return "timeout"
+
+    def _patrol_visit_table_prev(self, cur: int | None) -> str:
+        """【跟上一局】巡防進桌：對象在就黏桌——每局「開盤下上局計畫、開牌中讀本局存
+        下局」；對象連續幾局沒下邊注（或離桌）才換下一桌。"""
+        present, _plan = self._patrol_scan_table()
+        if not present:
+            logger.info("No.%s 無追蹤對象，換下一桌", cur)
+            return "switch"
+        leave_after = max(1, self.cfg.room.patrol_leave_after_idle)
+        logger.info(
+            "No.%s 有追蹤對象，黏桌（跟上一局：開牌中讀、下一局下；連續 %d 局沒得跟才換桌）",
+            cur,
+            leave_after,
+        )
+        idle = 0
+        while self._running:
+            result = self._patrol_prev_round_window(cur)
+            if result == "stored":
+                idle = 0
+                continue  # 下一局的窗口由下一輪自己等（讀取已在開牌中完成）
+            if result == "timeout":
+                logger.info("No.%s 等下注窗口逾時，換下一桌", cur)
+                return "switch"
+            if result == "absent":
+                logger.info("No.%s 對象已不在，換下一桌", cur)
+                self._patrol_wait_round_end()  # 開牌中不換桌，等本局結束再走
+                return "switch"
+            # main_only / no_bet：對象沒下可跟的邊注 → 容忍幾局
+            idle += 1
+            logger.info(
+                "No.%s 本局沒得跟（%s%s），連續 %d/%d 局",
+                cur,
+                result,
+                "：只下莊/閒" if result == "main_only" else "",
+                idle,
+                leave_after,
+            )
+            if idle >= leave_after:
+                logger.info("No.%s 連續 %d 局沒得跟，換下一桌", cur, idle)
+                self._patrol_wait_round_end()
+                return "switch"
+        return "switch"
+
     def _patrol_visit_table(self, cur: int | None) -> str:
         """進到本桌：先確認對象在不在；在就黏桌，每個下注窗口都提早開表、撐到剩
         T<=patrol_finalize_at_t 才讀最終金額跟注，直到對象某局沒下邊注／離開／逾時才換桌。
         """
+        if self._follow_prev_enabled():
+            return self._patrol_visit_table_prev(cur)
         # 進桌先快速確認對象在不在（隨時可開表，不必等下注窗，空桌才能秒換）
         present, _plan = self._patrol_scan_table()
         if not present:

@@ -89,6 +89,7 @@ def _read_launch_settings() -> dict:
         "probe_guard": None,  # 反試探開關；None=不指定(用 config 預設)
         "probe_escalate_rounds": None,  # 連續幾局試探→升級反制；0=不升級；None=不指定
         "probe_escalate_action": None,  # 升級動作：pause/switch；None=不指定
+        "follow_prev": None,  # 跟上一局（上局讀→本局下）；None=不指定(用 config 預設)
     }
     p = paths.launch_settings_path()
     if not p.is_file():
@@ -150,6 +151,11 @@ def _read_launch_settings() -> dict:
             digits = "".join(c for c in val if c.isdigit())
             if digits:
                 out["probe_escalate_rounds"] = int(digits)
+        elif any(k in key for k in ("跟上一局", "跟上局", "上局跟", "延遲跟", "follow_prev")):
+            if any(v in val for v in ("開", "啟", "是", "on", "true", "yes", "1")):
+                out["follow_prev"] = True
+            elif any(v in val for v in ("關", "閉", "否", "off", "false", "no", "0")):
+                out["follow_prev"] = False
         elif any(k in key for k in ("下注", "實戰", "bet", "live")):
             if any(v in val for v in ("開", "啟", "是", "on", "true", "yes", "1")):
                 out["live"] = True
@@ -285,6 +291,7 @@ _LAUNCH_OPTION_KEYS: dict[str, tuple[str, ...]] = {
     "跟注比例": ("跟注比例", "下注比例", "比例", "ratio"),
     "單注上限": ("單注上限", "单注上限", "最大跟注", "max_bet", "maxbet"),
     "單局總下注警告": ("單局總下注警告", "单局总下注警告", "總下注警告", "总下注警告", "單局總額警告", "round_total_warn"),
+    "跟上一局": ("跟上一局", "跟上局", "上局跟", "延遲跟", "follow_prev"),
     "反試探": ("反試探", "防試探", "試探防護", "probe_guard", "灑網", "試探升級", "試探換桌", "試探動作", "probe_escalate"),
     "影像辨識房間": ("影像辨識房間", "圖像辨識房間", "影像房間", "影像辨識", "template_room"),
     "影像比對門檻": ("影像比對門檻", "比對門檻", "影像門檻", "match_threshold"),
@@ -341,6 +348,16 @@ _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
         "#    例：單局總下注警告=30萬  或  單局總下注警告=300000\n"
         "#    填『不限』或 0 = 不提醒。留空 = 用預設 30 萬。\n"
         "單局總下注警告=30萬"
+    ),
+    "跟上一局": (
+        "# 【跟上一局】對方故意拖到最後 1~2 秒才下注時，跟『本局』根本來不及。開啟後改成：\n"
+        "#    等倒數走完（T 數完 1 之後、開牌中）才讀對方『這一局實際下了什麼』——此時金額\n"
+        "#    已鎖死、不能收回，辨識最穩——存起來，到『下一局』一開盤就早早照著下。\n"
+        "#    因為是等對方真金白銀下完才複製，他假下注再收回也騙不到我們（反試探自動關閉）。\n"
+        "#    掛房、巡防都適用；防踢補注等其他功能照舊。開新的一條牌（珠盤路空盤）不跟上一注，\n"
+        "#    所以每一條牌的第一注跟不到（正常現象）。\n"
+        "#    跟上一局=開／關（預設開）。填關 = 恢復原本的『同局即時跟』。\n"
+        "跟上一局=開"
     ),
     "反試探": (
         "# 【反試探】對手知道被自動跟單後，會用『乾淨大整數（5 萬整數倍：50k/100k/150k/200k）\n"
@@ -904,6 +921,10 @@ def main() -> int:
     pact = settings.get("probe_escalate_action")
     if pact is not None:
         engine.cfg.betting.probe_escalate_action = str(pact)
+    # 跟上一局（上局讀→本局下）
+    fp = settings.get("follow_prev")
+    if fp is not None:
+        engine.cfg.betting.follow_prev_round = bool(fp)
     # 影像辨識綁房間：覆寫 config，並重建引擎對照表（只在指定桌才找這些名字）
     ntr = settings.get("name_template_rooms")
     if ntr:
@@ -947,6 +968,10 @@ def main() -> int:
     else:
         print("文字辨識引擎：Tesseract（header_use_paddle=false）")
     bset = engine.cfg.betting
+    follow_prev_on = bool(getattr(bset, "follow_prev_round", False)) and not notify_only
+    if follow_prev_on:
+        print("跟注時機：【跟上一局】開牌中（T 數完 1 之後）讀對象本局實際下注（金額已鎖死、")
+        print("           收不回），下一局一開盤就照著下。新的一條牌（珠盤路空盤）不跟上一注。")
     if bset.follow_ratio_enabled and not (bset.follow_ratio_min >= 1.0 and bset.follow_ratio_max >= 1.0):
         print(
             f"跟注擬真：下注額 = 對方 × {bset.follow_ratio_min:.2f}~{bset.follow_ratio_max:.2f} 隨機，"
@@ -960,7 +985,9 @@ def main() -> int:
         print(f"風控：本局總跟注 > {bset.max_round_stake:,} 整局不跟")
     if bset.round_total_warn:
         print(f"提醒：對象單局總下注 > {bset.round_total_warn:,} 發 TG 警告（只提醒、不影響跟注）")
-    if bset.probe_guard:
+    if follow_prev_on:
+        print("反試探：不需要（跟上一局＝封盤後才讀、金額鎖死，假下注收回騙不到）")
+    elif bset.probe_guard:
         esc = bset.probe_escalate_rounds
         if esc:
             act = "暫停程式" if str(bset.probe_escalate_action).lower() == "pause" else "停跟並換桌"
@@ -986,14 +1013,20 @@ def main() -> int:
         src = "（啟動設定指定）" if settings.get("patrol_rooms") else "（config 預設＝全部）"
         print(f"巡房房間{src}：{engine.cfg.room.tables}")
     elif engine.cfg.room.mode == "patrol":
-        print(f"換房：進房綠燈 T>={engine.cfg.room.min_enter_t} 才開統計跟注；下注後等開牌再換桌")
+        if follow_prev_on:
+            print("換房：進房確認對象在 → 每局開盤先下『上一局計畫』，開牌中讀本局存給下一局")
+        else:
+            print(f"換房：進房綠燈 T>={engine.cfg.room.min_enter_t} 才開統計跟注；下注後等開牌再換桌")
         src = "（啟動設定指定）" if settings.get("patrol_rooms") else "（config 預設＝全部）"
         print(f"巡房房間{src}：{engine.cfg.room.tables}")
     else:
-        print(
-            f"時間軸：T={t.open_stats_at_t} 開統計 -> T<={t.prefetch_at_t} 預定位 -> "
-            f"T={t.finalize_at_t} 定稿（僅 T>={t.min_round_start_t} 且錨定成功才開局）"
-        )
+        if follow_prev_on:
+            print("時間軸：開盤（綠燈）→ 立刻下『上一局計畫』→ 倒數走完（T 數完 1）→ 開統計讀本局 → 存給下一局")
+        else:
+            print(
+                f"時間軸：T={t.open_stats_at_t} 開統計 -> T<={t.prefetch_at_t} 預定位 -> "
+                f"T={t.finalize_at_t} 定稿（僅 T>={t.min_round_start_t} 且錨定成功才開局）"
+            )
         if engine.cfg.room.stay_table:
             print(f"掛房固定桌號：No.{engine.cfg.room.stay_table}（被踢/當機會自動回此桌）")
         else:

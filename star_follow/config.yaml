@@ -114,6 +114,8 @@ betting:
   probe_same_amount_cells: 3
   probe_escalate_rounds: 2
   probe_escalate_action: pause
+  follow_prev_round: true
+  new_shoe_bead_threshold: 0.003
 telegram:
   enabled: false
   bot_token: 8893028334:AAGNJQt5djgMjjmCswxfwTUdh2h7VdvoXMM
@@ -222,6 +224,13 @@ roi:
   - 655
   - 150
   - 24
+  # 珠盤路（新靴偵測）：牌桌下方「全路」檢視左下的珠盤路格子（避開上方標題列）。
+  # 進行中滿是紅/藍珠子（~35%），開新靴時全白（~0%）→ 判斷是否新的一條牌。
+  bead_plate:
+  - 384
+  - 590
+  - 182
+  - 66
 stats_layout:
   header_band:
   - 0.0

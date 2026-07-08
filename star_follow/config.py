@@ -177,6 +177,15 @@ class BettingConfig:
     # 升級反制動作：pause=暫停整支程式並發 TG（cover 已暴露時最穩，等人工換名重啟）；
     # switch=停跟該對象並換桌（巡防）／停跟（掛房）。
     probe_escalate_action: str = "pause"
+    # 【跟上一局】延遲跟注：對方改成超晚（T=2）下注、跟本局已不可能。改成「封盤後/開牌中」
+    # 才讀對象『這一局實際下了什麼』（金額已鎖死、辨識最穩），存起來到『下一局』一開盤就
+    # 早早照著下。因為是等對方真的下完才複製，沒有「最後一秒收回」問題，故此模式下反試探
+    # 自動關閉。掛房、巡防都適用。開新的一條牌（珠盤路空盤）就不跟上一注。
+    follow_prev_round: bool = True
+    # 新靴判定：珠盤路顏色佔比低於此值 → 視為新的一條牌（空盤），該局不跟、清掉上一局計畫。
+    # 注意：單顆珠子約佔 0.005，門檻必須低於它——只有「一顆都沒有」才算新靴，
+    # 新靴第 2 局（盤上已有 1 顆）就要照常跟第 1 局的注。
+    new_shoe_bead_threshold: float = 0.003
 
 
 # 內建 Telegram 通知預設：放在「程式碼」裡，才會被打包進 exe，並隨自動更新送到
@@ -416,6 +425,8 @@ def load_config(path: Path | str | None = None) -> AppConfig:
             probe_same_amount_cells=int(bt.get("probe_same_amount_cells", 3)),
             probe_escalate_rounds=int(bt.get("probe_escalate_rounds", 2)),
             probe_escalate_action=str(bt.get("probe_escalate_action", "pause")),
+            follow_prev_round=bool(bt.get("follow_prev_round", True)),
+            new_shoe_bead_threshold=float(bt.get("new_shoe_bead_threshold", 0.003)),
         ),
         telegram=TelegramConfig(
             enabled=bool(tg.get("enabled", False)),
@@ -562,6 +573,8 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
         "probe_same_amount_cells": cfg.betting.probe_same_amount_cells,
         "probe_escalate_rounds": cfg.betting.probe_escalate_rounds,
         "probe_escalate_action": cfg.betting.probe_escalate_action,
+        "follow_prev_round": cfg.betting.follow_prev_round,
+        "new_shoe_bead_threshold": cfg.betting.new_shoe_bead_threshold,
     }
     data["telegram"] = {
         "enabled": cfg.telegram.enabled,
