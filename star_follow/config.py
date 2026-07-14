@@ -151,8 +151,9 @@ class BettingConfig:
     # 掛房：首次 OCR 追到對象時先補一手閒（抵消進桌/OCR 暖機的閒置），之後才累計未下注局數
     anti_kick_first_track_bet: bool = True
     # 跟注金額擬真：避免每把都跟對方一模一樣太明顯。
-    # 下注額 = 對方金額 × 隨機比例(min~max)，再「無條件進位」到 round_to 的倍數（最低一注）。
-    # 例：對方 10000、比例 0.83 → 8300 → 進位到 9000。範圍可在「啟動設定.txt」調整。
+    # 下注額 = 對方金額 × 隨機倍數(min~max，0.01~5，可縮小也可放大)，
+    # 再「無條件進位」到 round_to 的倍數（最低一注）。
+    # 例：對方 10000、倍數 0.83 → 8300 → 進位到 9000。範圍可在「啟動設定.txt」調整。
     follow_ratio_enabled: bool = True
     follow_ratio_min: float = 0.8
     follow_ratio_max: float = 0.99

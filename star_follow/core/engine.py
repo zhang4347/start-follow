@@ -1079,8 +1079,9 @@ class FollowEngine:
         return out
 
     def _scale_follow_plan(self, plan: dict[str, int]) -> dict[str, int]:
-        """跟注擬真：把跟到的金額按隨機比例縮小，再無條件進位到整數注，避免每把都
-        跟對方一模一樣太明顯。比例每局隨機取一次（同一局多區同比例，較自然）。
+        """跟注擬真：把跟到的金額按隨機倍數縮放（可縮小也可放大，0.01~5 倍），
+        再無條件進位到整數注，避免每把都跟對方一模一樣太明顯。
+        倍數每局隨機取一次（同一局多區同倍數，較自然）。
         只作用於『跟對方』的金額；防踢補注走另一條路徑、維持最小注不受影響。
         """
         bcfg = self.cfg.betting
@@ -1088,8 +1089,8 @@ class FollowEngine:
             return plan
         lo = min(bcfg.follow_ratio_min, bcfg.follow_ratio_max)
         hi = max(bcfg.follow_ratio_min, bcfg.follow_ratio_max)
-        # 比例 >=1（或設定異常）等於不縮小，直接跟原額。
-        if lo <= 0 or (lo >= 1.0 and hi >= 1.0):
+        # 倍數固定 1（或設定異常）等於不縮放，直接跟原額。
+        if lo <= 0 or (lo == 1.0 and hi == 1.0):
             return plan
         unit = bcfg.follow_ratio_round_to if bcfg.follow_ratio_round_to > 0 else 1000
         min_chip = min(self.cfg.chip_values) if self.cfg.chip_values else unit

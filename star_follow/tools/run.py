@@ -156,6 +156,9 @@ def _read_launch_settings() -> dict:
                 out["follow_prev"] = True
             elif any(v in val for v in ("關", "閉", "否", "off", "false", "no", "0")):
                 out["follow_prev"] = False
+        elif any(k in key for k in ("跟注比例", "下注比例", "比例", "倍數", "倍率", "ratio")):
+            # 注意：要放在「下注=開/關」之前，否則「下注比例」會被那個分支攔截吃掉。
+            out["follow_ratio"] = _parse_ratio_setting(val)
         elif any(k in key for k in ("下注", "實戰", "bet", "live")):
             if any(v in val for v in ("開", "啟", "是", "on", "true", "yes", "1")):
                 out["live"] = True
@@ -181,8 +184,6 @@ def _read_launch_settings() -> dict:
         elif any(k in key for k in ("帳號", "帐号", "帳戶", "account", "玩家")):
             if val:
                 out["account_name"] = val
-        elif any(k in key for k in ("跟注比例", "下注比例", "比例", "ratio")):
-            out["follow_ratio"] = _parse_ratio_setting(val)
         elif any(k in key for k in ("單注上限", "单注上限", "最大跟注", "max_bet", "maxbet")):
             out["max_follow_bet"] = _parse_amount_setting(val)
         elif any(k in key for k in ("比對門檻", "影像門檻", "match_threshold")):
@@ -253,25 +254,29 @@ def _parse_float_setting(val: str):
 
 
 def _parse_ratio_setting(val: str):
-    """解析『跟注比例』：可填範圍 0.8-0.99 / 0.8~0.99，或單一值 0.9（固定比例），
-    或填 關/off/100% 代表不縮小（跟對方原額）。讀不懂回 None（沿用 config 預設）。
+    """解析『跟注比例（倍數）』：下注額 = 對方金額 × 倍數，支援 0.01~5 倍（可放大）。
+
+    可填範圍 0.5-5 / 0.8~0.99（每把在範圍內隨機），或單一值 0.9 / 2（固定倍數），
+    或填 關/off/原額 代表跟對方原額（=1 倍）。
+    百分比寫法也通：>5 的數字視為百分比（例 80-99 → 0.8~0.99）。
+    讀不懂回 None（沿用 config 預設）。
     """
     import re as _re
 
-    v = val.strip().lower().replace("%", "")
+    v = val.strip().lower().replace("%", "").replace("倍", "")
     if not v:
         return None
-    if any(x in v for x in ("關", "閉", "off", "no", "false", "原額", "100")):
+    if any(x in v for x in ("關", "閉", "off", "no", "false", "原額")):
         return False
     nums = [float(x) for x in _re.findall(r"\d+(?:\.\d+)?", v)]
     if not nums:
         return None
-    # 允許用百分比寫法（如 80-99）：>1 視為百分比自動換算。
-    nums = [n / 100.0 if n > 1.0 else n for n in nums]
+    # 倍數上限 5，所以 >5 的數字視為百分比寫法（如 80-99、100）自動換算。
+    nums = [n / 100.0 if n > 5.0 else n for n in nums]
     lo = min(nums)
     hi = max(nums)
-    lo = max(0.01, min(lo, 1.0))
-    hi = max(0.01, min(hi, 1.0))
+    lo = max(0.01, min(lo, 5.0))
+    hi = max(0.01, min(hi, 5.0))
     return (lo, hi)
 
 
@@ -288,7 +293,7 @@ _LAUNCH_OPTION_KEYS: dict[str, tuple[str, ...]] = {
     "桌號": ("桌號", "桌号", "桌", "table"),
     "巡房房間": ("巡房房間", "巡防房間", "巡房桌號", "巡防桌號", "巡房範圍", "巡防範圍", "循房", "patrol_room", "patrol_table"),
     "對象": ("對象", "对象", "跟注對象", "target"),
-    "跟注比例": ("跟注比例", "下注比例", "比例", "ratio"),
+    "跟注比例": ("跟注比例", "下注比例", "比例", "倍數", "倍率", "ratio"),
     "單注上限": ("單注上限", "单注上限", "最大跟注", "max_bet", "maxbet"),
     "單局總下注警告": ("單局總下注警告", "单局总下注警告", "總下注警告", "总下注警告", "單局總額警告", "round_total_warn"),
     "跟上一局": ("跟上一局", "跟上局", "上局跟", "延遲跟", "follow_prev"),
@@ -326,11 +331,11 @@ _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
         "對象="
     ),
     "跟注比例": (
-        "# 【跟注比例】跟注金額 = 對方金額 × 隨機比例，再無條件進位到整數注（最低 1000）。\n"
-        "#    避免每把都跟對方一模一樣太明顯。例：對方 10000、比例 0.83 → 進位到 9000。\n"
-        "#    填範圍 = 每把在此範圍隨機（建議）：例 跟注比例=0.8-0.99\n"
-        "#    填單一值 = 固定比例：例 跟注比例=0.9\n"
-        "#    填『關』 = 不縮小，跟對方原額：跟注比例=關\n"
+        "# 【跟注比例（倍數）】跟注金額 = 對方金額 × 倍數，再無條件進位到整數注（最低 1000）。\n"
+        "#    倍數可填 0.01~5，可縮小也可放大。例：對方 10000、倍數 0.83 → 進位到 9000。\n"
+        "#    填範圍 = 每把在此範圍隨機（建議）：例 跟注比例=0.5-5  或  跟注比例=0.8-0.99\n"
+        "#    填單一值 = 固定倍數：例 跟注比例=0.9  或  跟注比例=2\n"
+        "#    填『關』 = 跟對方原額：跟注比例=關\n"
         "#    留空 = 用預設 0.8~0.99。\n"
         "跟注比例=0.8-0.99"
     ),
@@ -972,13 +977,13 @@ def main() -> int:
     if follow_prev_on:
         print("跟注時機：【跟上一局】開牌中（T 數完 1 之後）讀對象本局實際下注（金額已鎖死、")
         print("           收不回），下一局一開盤就照著下。新的一條牌（珠盤路空盤）不跟上一注。")
-    if bset.follow_ratio_enabled and not (bset.follow_ratio_min >= 1.0 and bset.follow_ratio_max >= 1.0):
+    if bset.follow_ratio_enabled and not (bset.follow_ratio_min == 1.0 and bset.follow_ratio_max == 1.0):
         print(
-            f"跟注擬真：下注額 = 對方 × {bset.follow_ratio_min:.2f}~{bset.follow_ratio_max:.2f} 隨機，"
+            f"跟注倍數：下注額 = 對方 × {bset.follow_ratio_min:.2f}~{bset.follow_ratio_max:.2f} 隨機，"
             f"無條件進位到 {bset.follow_ratio_round_to}"
         )
     else:
-        print("跟注擬真：關閉（跟對方原額）")
+        print("跟注倍數：關閉（跟對方原額）")
     if bset.max_follow_bet:
         print(f"風控：對象單注 > {bset.max_follow_bet:,} 不跟")
     if bset.max_round_stake:
