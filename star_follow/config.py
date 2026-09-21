@@ -118,13 +118,11 @@ class RoomConfig:
     stay_pause_when_targets_absent: bool = True
     # 連續這麼多局都讀不到任何指定對象，才判定「對象全離桌」（容忍偶發漏讀）。
     stay_absent_rounds_to_pause: int = 1
-    # 對象全離桌時的處置（stay_on_absent）：
-    #   keep  = 只發 TG 通知，但程式照常跑（繼續防踢補注、被踢照樣自動回桌），
-    #           待對象某局又出現就自動恢復跟注（推薦，最不會卡）。
-    #   pause = 發 TG 後暫停跟注（不防踢、被踢也不回桌），但程式不結束。
-    #   stop  = 發 TG 後直接停止程式。
+    # 對象全離桌時的處置：掛房固定「守桌」——只發 TG 通知，程式照常跑（繼續防踢補注、
+    # 被踢照樣自動回桌），對象某局又出現就自動恢復跟注。對手會一直換帳號進出，我方一旦
+    # 讓座就會被塞滿，所以絕不因為沒對象而停手。舊的 pause／stop 已停用，僅保留讀取相容。
     stay_on_absent: str = "keep"
-    # 舊設定（相容用）：對象全離桌→停止程式。僅在未設定 stay_on_absent 時生效。
+    # 舊設定（相容用，已不影響行為）。
     stay_stop_when_targets_absent: bool = True
     # 影像辨識「綁房間」：{暱稱: [桌號,...]}。只在指定桌號才用影像樣板找這個名字，
     # 其餘房間完全不找它（不比對也不 OCR）。用於 OCR 讀不準、且固定待在某桌的對象，
@@ -144,10 +142,15 @@ class BettingConfig:
     # 兩模式都「不跟」這些下注區（跟注計畫會濾掉）。預設不跟莊、閒。
     follow_exclude: list[str] = field(default_factory=lambda: ["莊", "閒"])
     # 掛房防踢：連續這麼多局我方都沒下注，就自己補一手最小注，避免被系統踢出。
+    # 遊戲是 5 局沒押注就踢，預設 2 局補一次，留 3 局緩衝（卡頓／漏局也不會被踢）。
     anti_kick_enabled: bool = True
-    anti_kick_idle_rounds: int = 3   # 連續幾局沒下注就補注
+    anti_kick_idle_rounds: int = 2   # 連續幾局沒下注就補注
     anti_kick_side: str = "閒"        # 補注下哪一邊（莊/閒）
     anti_kick_amount: int = 0         # 補注金額，0=用最小籌碼
+    # 防踢時間保險：距離上次下注超過這麼多秒，就在下一個能下注的綠燈窗強制補一手。
+    # 局數計數只認「我們有看到的局」，機器卡頓／導覽中整局沒偵測到時計數不會動，
+    # 這條用真實時間兜底。一局約 40 秒，預設 150 秒（約 3 局）。0 = 關閉。
+    anti_kick_max_idle_s: float = 150.0
     # 掛房：首次 OCR 追到對象時先補一手閒（抵消進桌/OCR 暖機的閒置），之後才累計未下注局數
     anti_kick_first_track_bet: bool = True
     # 跟注金額擬真：避免每把都跟對方一模一樣太明顯。
@@ -409,9 +412,10 @@ def load_config(path: Path | str | None = None) -> AppConfig:
         betting=BettingConfig(
             follow_exclude=[str(x) for x in (bt.get("follow_exclude") or ["莊", "閒"])],
             anti_kick_enabled=bool(bt.get("anti_kick_enabled", True)),
-            anti_kick_idle_rounds=int(bt.get("anti_kick_idle_rounds", 3)),
+            anti_kick_idle_rounds=int(bt.get("anti_kick_idle_rounds", 2)),
             anti_kick_side=str(bt.get("anti_kick_side", "閒")),
             anti_kick_amount=int(bt.get("anti_kick_amount", 0)),
+            anti_kick_max_idle_s=float(bt.get("anti_kick_max_idle_s", 150.0)),
             anti_kick_first_track_bet=bool(bt.get("anti_kick_first_track_bet", True)),
             follow_ratio_enabled=bool(bt.get("follow_ratio_enabled", True)),
             follow_ratio_min=float(bt.get("follow_ratio_min", 0.8)),
@@ -560,6 +564,7 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
         "anti_kick_idle_rounds": cfg.betting.anti_kick_idle_rounds,
         "anti_kick_side": cfg.betting.anti_kick_side,
         "anti_kick_amount": cfg.betting.anti_kick_amount,
+        "anti_kick_max_idle_s": cfg.betting.anti_kick_max_idle_s,
         "anti_kick_first_track_bet": cfg.betting.anti_kick_first_track_bet,
         "follow_ratio_enabled": cfg.betting.follow_ratio_enabled,
         "follow_ratio_min": cfg.betting.follow_ratio_min,

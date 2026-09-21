@@ -71,6 +71,8 @@ class RoundContext:
     # 最近一次 _build_plan「過濾前」每個對象的實際下注分項（含莊/閒），供通知模式判斷
     # 「對象下了哪些邊注」用。{對象名: {下注區: 金額}}
     last_per_target_bets: dict[str, dict[str, int]] = field(default_factory=dict)
+    # 掛房防踢：本局是否已把「我方沒下注」計入閒置局數（同一局只能計一次）。
+    idle_counted: bool = False
 
 
 class FollowEngine:
@@ -114,11 +116,14 @@ class FollowEngine:
         self._locked_since_mono = 0.0  # 進入 LOCKED 的時點（時間保險用）
         self._stay_idle_rounds = 0  # 掛房：連續沒下注的局數（防踢用）
         self._stay_first_track_done = False  # 掛房：是否已成功追到對象（暖機完成）
+        # 掛房防踢時間保險：上次真的下注的時點。局數計數只認「我們有看到的局」，
+        # 機器卡頓／導覽中整局沒偵測到時計數不會動，靠這條時間線兜底。
+        self._stay_last_bet_mono = time.monotonic()
+        self._last_force_kick_mono = 0.0
         # 餘額上傳協調用：是否「穩定待在（指定）牌桌」。上傳只在此為真且非下注/讀表階段才放行，
         # 避免上傳的抓圖/OCR 與主流程定位讀表搶資源造成卡頓。
         self._at_table_stable = False
         self._stay_absent_streak = 0  # 掛房：連續沒讀到任何指定對象的局數
-        self._stay_paused = False  # 掛房：pause 模式下對象全離桌 → 停跟注/防踢/回桌
         self._stay_absent_active = False  # 掛房：目前是否處於「對象全離桌」狀態（各模式共用）
         self._stay_pause_notified = False  # 已對「對象全離桌」發過 TG
         self._last_stay_pause_log_mono = 0.0
@@ -231,7 +236,9 @@ class FollowEngine:
             (time.perf_counter() - t0) * 1000,
         )
 
-    def _skip_late_round(self, frame, t: int | None) -> None:
+    def _skip_late_round(
+        self, frame, t: int | None, cd_color: CountdownColor | None = None
+    ) -> None:
         """本局太晚不開流程；順便關掉可能殘留的統計表。"""
         if not self._late_skip_logged and t is not None:
             logger.info(
@@ -243,6 +250,9 @@ class FollowEngine:
             self._late_skip_logged = True
         if self._panel_open_confirmed(frame) or self._menu_dropdown_open(frame):
             self._recover_ui(frame, "跳過晚接局")
+        # 跳過的這一局遊戲端照樣算「未押注」，必須計入防踢，否則會悄悄累積到被踢。
+        # 這時倒數還在跑，來得及的話就直接補一手。
+        self._count_idle_round("跳過晚接局", frame=frame, t=t, cd_color=cd_color)
 
     def _round_active_too_long(self) -> bool:
         """看門狗：單局在下注階段卡太久（多半 OCR 太慢／畫面異常導致走不到定稿、
@@ -407,6 +417,7 @@ class FollowEngine:
     def _abort_round(self, frame, reason: str) -> None:
         logger.warning("本局中止：%s", reason)
         self._recover_ui(frame, reason)
+        self._count_idle_round(f"本局中止（{reason}）")
         self._ui_fail_streak += 1
         if self._ui_fail_streak >= 3:
             logger.error(
@@ -428,6 +439,7 @@ class FollowEngine:
         logger.warning("本局開在 T=%s 過晚，中止流程", rs)
         if self._panel_open(frame) or self.ctx.stats_opened:
             self._recover_ui(frame, "開局過晚")
+        self._count_idle_round("開局過晚未下注", t=t)
         self._enter_locked(note="開局過晚，本局中止")
         return True
 
@@ -1351,7 +1363,7 @@ class FollowEngine:
                 stake = sum(v for v in plan.values() if v > 0)
                 self._session_rounds += 1
                 self._session_stake += stake
-                self._stay_idle_rounds = 0
+                self._mark_bet_placed()
                 logger.info(
                     "本局下注 %d，累計 %d 局 / %d", stake, self._session_rounds, self._session_stake
                 )
@@ -1364,10 +1376,9 @@ class FollowEngine:
                 self._prev_first_track_insurance = False
                 bet_done = self._maybe_first_track_insurance(frame, t_now, cd_color)
             if not bet_done:
-                if self._should_count_stay_idle():
-                    self._stay_idle_rounds += 1
-                    logger.info("本局沒有上一局計畫可下（連續未下注 %d 局）", self._stay_idle_rounds)
-                self._maybe_anti_kick(frame, t_now, cd_color)
+                self._count_idle_round(
+                    "本局沒有上一局計畫可下", frame=frame, t=t_now, cd_color=cd_color
+                )
         self.phase = Phase.WAIT_REVEAL
 
     def _stay_wait_reveal_step(self, ocr_t: int | None, ocr_color: CountdownColor) -> None:
@@ -1391,6 +1402,7 @@ class FollowEngine:
         waited = time.perf_counter() - rs
         if waited >= 75.0:
             logger.warning("等開牌逾時（%.0fs），本局放棄讀取", waited)
+            self._count_idle_round("等開牌逾時未下注")
             self._enter_locked(note="等開牌逾時，等待下一局")
             return
         sw_done = sw_t is not None and sw_t <= 0
@@ -1403,6 +1415,7 @@ class FollowEngine:
             and ocr_t >= self._min_start_t()
         ):
             logger.warning("開牌讀取沒趕上、已進下一局 → 本局放棄讀取")
+            self._count_idle_round("開牌讀取沒趕上", bet=False)
             self._enter_locked(note="開牌讀取沒趕上")
             return
         if sw_t is None:
@@ -1437,12 +1450,12 @@ class FollowEngine:
             t_bet, cd_color = self._read_cd_real()
             bet_t = t_bet if t_bet is not None else t
             bet_color = cd_color if t_bet is not None else cd.color
-            if self._should_count_stay_idle():
-                self._stay_idle_rounds += 1
             logger.info(
                 "對象離桌＋將達防踢門檻：跳過慢統計，提前補注（T=%s）", bet_t
             )
-            if not self._maybe_anti_kick(frame, bet_t, bet_color):
+            if not self._count_idle_round(
+                "對象離桌未下注", frame=frame, t=bet_t, cd_color=bet_color
+            ):
                 self._save_round(frame, t_bet, bet=False)
             self._enter_locked()
             return
@@ -1478,15 +1491,9 @@ class FollowEngine:
             if first_track and self._maybe_first_track_insurance(frame, t_bet, cd_color):
                 self._enter_locked()
                 return
-            if self._should_count_stay_idle():
-                self._stay_idle_rounds += 1
-                logger.info("跟注計畫為空（連續未下注 %d 局）", self._stay_idle_rounds)
-            else:
-                logger.info(
-                    "跟注計畫為空（表頭未讀穩／尚未追到對象，不計入防踢閒置；"
-                    "若表頭有名字但對象不在則仍會累計）"
-                )
-            if not self._maybe_anti_kick(frame, t_bet, cd_color):
+            if not self._count_idle_round(
+                "跟注計畫為空", frame=frame, t=t_bet, cd_color=cd_color
+            ):
                 self._save_round(frame, t_bet, bet=False)
             self._enter_locked()
             return
@@ -1495,8 +1502,7 @@ class FollowEngine:
 
         if not self._bet_gate_after_close(t_bet, cd_color):
             logger.warning("關表後讀不到倒數（多半已封盤/過場），跳過執行（定稿時 T=%s）", t)
-            if self._should_count_stay_idle():
-                self._stay_idle_rounds += 1
+            self._count_idle_round("關表後讀不到倒數", frame=frame, t=t_bet, cd_color=cd_color)
             self._save_round(frame, t_bet, bet=False)
             self._enter_locked()
             return
@@ -1511,7 +1517,7 @@ class FollowEngine:
         stake = sum(v for v in self.ctx.plan.values() if v > 0)
         self._session_rounds += 1
         self._session_stake += stake
-        self._stay_idle_rounds = 0  # 有下注就歸零
+        self._mark_bet_placed()  # 有下注就歸零
         logger.info(
             "本局下注 %d，累計 %d 局 / %d",
             stake,
@@ -1569,6 +1575,7 @@ class FollowEngine:
         self._cd_tracker.reset()
         self._col_cache = {}  # 換桌後欄位版面不同，清掉跨局快取，下一局整排重掃
         self._stay_idle_rounds = 0
+        self._stay_last_bet_mono = time.monotonic()  # 剛重新入座，遊戲端的未押注計數也歸零
         self._stay_first_track_done = False
         self._stay_at_table_grace_until = time.monotonic() + 30.0
         logger.info("掛房已回到牌桌，恢復跟注（30s 內不因畫面閃爍重跑回桌）")
@@ -1579,7 +1586,9 @@ class FollowEngine:
         持續嘗試切回指定桌。回傳 True 表示本輪已處理（呼叫端應結束本輪）。
 
         關鍵：每輪都獨立用左下角桌號重新判斷，所以
-          - 滿桌切不過去 → 下一輪再試（一直優先回指定桌）；
+          - 滿桌切不過去 → 回傳 False，讓本輪照常跑局流程，在「現在這張桌」也照樣
+            補注防踢（不然會在等位子的期間被這張桌踢出去，又被對手塞滿），
+            同時每 5 秒繼續重試切回指定桌，直到有位子；
           - 切桌過程又被踢出 → 下一輪會先被「不在牌桌」分支接住、重新進場，
             不會卡在「一直換房卻沒發現又被踢」的狀態。
         讀不到桌號就不動作（避免誤切）。
@@ -1599,28 +1608,36 @@ class FollowEngine:
         if cur is None or cur == target:
             return False
         logger.info("掛房：目前在 No.%s，非指定桌 No.%s → 嘗試切回", cur, target)
-        if switch_to_table(win, self.cfg, target, capture_fn=lambda: capture_client(win)):
-            logger.info("已切回指定桌號 No.%s", target)
-            self.phase = Phase.IDLE
-            self.ctx = RoundContext()
-            self._cd_tracker.reset()
-            self._col_cache = {}
-            self._stay_first_track_done = False
-            self._stay_at_table_grace_until = time.monotonic() + 30.0
-        else:
-            logger.warning("指定桌 No.%s 目前切不過去（可能滿桌），下一輪再試", target)
+        if not switch_to_table(win, self.cfg, target, capture_fn=lambda: capture_client(win)):
+            logger.warning(
+                "指定桌 No.%s 目前切不過去（可能滿桌），先守住 No.%s（照常防踢補注），5 秒後再試",
+                target,
+                cur,
+            )
+            return False
+        logger.info("已切回指定桌號 No.%s", target)
+        self.phase = Phase.IDLE
+        self.ctx = RoundContext()
+        self._cd_tracker.reset()
+        self._col_cache = {}
+        self._stay_first_track_done = False
+        self._stay_last_bet_mono = time.monotonic()  # 剛換座位，遊戲端未押注計數重來
+        self._stay_at_table_grace_until = time.monotonic() + 30.0
         return True
 
     def _update_stay_presence(self) -> None:
-        """掛房：依本局是否讀到任何指定對象，更新「對象全離桌→暫停／停止」狀態。
+        """掛房：依本局是否讀到任何指定對象，更新「對象全離桌」狀態並發 Telegram 通知。
+
+        掛房固定「守桌」：對象全不在也照常補注防踢、被踢照樣自動回桌，對象回來自動
+        恢復跟注。對手會一直換帳號進出，我方一旦讓座就會被塞滿，所以絕不因為沒對象
+        而停手（舊的 pause／stop 處置已停用）。
 
         關鍵：只有「確實讀到統計表（表頭有名字）但沒有任何一個是追蹤對象」才算
         真的離桌；若整張表頭一個名字都讀不到（OCR 失敗／表沒開好）就不計入，避免
-        單次讀取失誤誤判成對象消失而錯誤停止程式。
+        單次讀取失誤誤判成對象消失。
         """
         if self.cfg.room.mode != "stay" or not self.cfg.room.stay_pause_when_targets_absent:
             return
-        on_absent = (getattr(self.cfg.room, "stay_on_absent", "keep") or "keep").lower()
         present = len(self.ctx.resolved_columns) > 0
         table_tag = f"No.{self.cfg.room.stay_table}" if self.cfg.room.stay_table else "本桌"
         if present:
@@ -1629,7 +1646,6 @@ class FollowEngine:
                 self._notify_targets_gone(f"追蹤對象已回到 {table_tag}，恢復跟注")
             self._stay_absent_streak = 0
             self._stay_absent_active = False
-            self._stay_paused = False
             self._stay_pause_notified = False
             return
         if self.ctx.header_name_count <= 0:
@@ -1648,32 +1664,8 @@ class FollowEngine:
         self._stay_first_track_done = False  # 對象確認不在；回來後可再觸發首次保險閒注
         msg = f"{table_tag} 統計表未見任何追蹤對象"
 
-        if on_absent == "stop":
-            self._stay_paused = True
-            if not self._stay_pause_notified:
-                self._stay_pause_notified = True
-                self._notify_targets_gone(f"{msg}，程式即將停止")
-            logger.warning(
-                "連續 %d 局都沒有任何指定對象在%s → 停止程式",
-                self._stay_absent_streak, table_tag,
-            )
-            self.stop()
-            return
-
-        if on_absent == "pause":
-            self._stay_paused = True
-            if not self._stay_pause_notified:
-                self._stay_pause_notified = True
-                self._notify_targets_gone(f"{msg}，暫停跟注（不防踢、被踢不回桌）")
-            logger.warning(
-                "連續 %d 局都沒有任何指定對象在%s → 暫停跟注（不防踢、被踢也不自動回桌）",
-                self._stay_absent_streak, table_tag,
-            )
-            return
-
-        # keep（預設）：只通知，程式照常跑——繼續防踢補注、被踢照樣自動回桌，
+        # 守桌：只通知，程式照常跑——繼續防踢補注、被踢照樣自動回桌，
         # 待對象某局又出現就自動恢復跟注。
-        self._stay_paused = False
         if not self._stay_pause_notified:
             self._stay_pause_notified = True
             self._notify_targets_gone(
@@ -1682,7 +1674,7 @@ class FollowEngine:
         now = time.perf_counter()
         if now - self._last_stay_pause_log_mono >= 15.0:
             logger.info(
-                "對象全離桌（keep）：持續防踢補注／被踢自動回桌，守住%s 待對象回來",
+                "對象全離桌：持續防踢補注／被踢自動回桌，守住%s 待對象回來",
                 table_tag,
             )
             self._last_stay_pause_log_mono = now
@@ -1691,33 +1683,80 @@ class FollowEngine:
         """本局統計表表頭是否確實讀到名字（非 OCR 暖機／表沒開好）。
 
         已追到對象（resolved_columns 有值）就是表頭讀成功的鐵證——快取命中走刷新金額
-        路徑時不會重數 header_name_count，但對象欄位確實對上了，仍須視為讀表成功，
-        否則防踢閒置會永遠不累計（對象在桌休息時我方一直沒下注卻被當暖機 → 被踢）。
+        路徑時不會重數 header_name_count，但對象欄位確實對上了，仍須視為讀表成功。
         """
         return self.ctx.header_name_count > 0 or bool(self.ctx.resolved_columns)
 
-    def _stay_target_confirmed_absent(self) -> bool:
-        """表頭讀得到其他玩家，但追蹤對象不在本桌（真的離桌，不是暖機讀不到）。"""
-        if self.cfg.room.mode != "stay":
-            return False
-        if not self._stay_table_read_ok():
-            return False
-        return len(self.ctx.resolved_columns) == 0
+    def _mark_bet_placed(self) -> None:
+        """記錄「我方真的下注了」：歸零防踢局數與時間保險。"""
+        self._stay_idle_rounds = 0
+        self._stay_last_bet_mono = time.monotonic()
 
-    def _should_count_stay_idle(self) -> bool:
-        """掛房防踢：何時累計「我方未下注」局數。
+    def _stay_force_anti_kick(self, frame, t: int | None, cd_color: CountdownColor) -> bool:
+        """時間保險：太久沒下注就強制補一手，不管狀態機跑到哪一相。
 
-        - 已追到對象：照常累計。
-        - 表頭讀得到名字但對象不在（或已確認離桌）：照常累計並防踢。
-        - 表頭讀不到（OCR 暖機）：不累計，避免與「真的不在房」混淆。
+        局數計數只認「我們有看到的局」；機器卡頓、回桌導覽、狀態機卡住時整局沒被偵測到，
+        計數不會動，但遊戲端照樣在累積未押注局數。這條用真實時間兜底：距離上次下注超過
+        門檻秒數，就在下一個還能下注的綠燈窗補一手。
         """
-        if self.cfg.room.mode != "stay":
-            return True
-        if self._stay_first_track_done:
-            return True
-        if self._stay_absent_active or self._stay_target_confirmed_absent():
-            return True
-        return False
+        bcfg = self.cfg.betting
+        if self.cfg.room.mode != "stay" or not bcfg.anti_kick_enabled:
+            return False
+        limit = float(getattr(bcfg, "anti_kick_max_idle_s", 0.0) or 0.0)
+        if limit <= 0:
+            return False
+        now = time.monotonic()
+        if now - self._stay_last_bet_mono < limit:
+            return False
+        if now - self._last_force_kick_mono < 20.0:
+            return False  # 同一局內別連補（一局約 40 秒）
+        if not self._can_bet_now(t, cd_color):
+            return False
+        self._last_force_kick_mono = now
+        logger.warning(
+            "防踢時間保險：已 %.0f 秒沒下注（可能有整局沒偵測到），強制補注 T=%s",
+            now - self._stay_last_bet_mono,
+            t,
+        )
+        return self._place_anti_kick_bet(frame, t, cd_color, reason="時間保險防踢補注")
+
+    def _count_idle_round(
+        self,
+        reason: str,
+        *,
+        frame=None,
+        t: int | None = None,
+        cd_color: CountdownColor | None = None,
+        bet: bool = True,
+    ) -> bool:
+        """掛房：把「這一局我方沒下注」計入防踢閒置，達門檻就立刻補注。回傳是否補注成功。
+
+        遊戲端只看「連續幾局沒押注」，不管我們的狀態機為什麼沒跑完流程，所以跳過局、
+        中止局、看門狗、開牌讀取沒趕上……通通得計數，否則會悄悄累積到被踢。
+        同一局只計一次（ctx.idle_counted）。
+        bet=False 用於「倒數已經是下一局」的情境：只計數，補注留給下一局開盤時做，
+        免得同一局既補防踢又下跟注計畫。
+        """
+        if self.cfg.room.mode != "stay" or self.ctx.idle_counted:
+            return False
+        self.ctx.idle_counted = True
+        self._stay_idle_rounds += 1
+        logger.info("%s（連續未下注 %d 局）", reason, self._stay_idle_rounds)
+        if not bet or self._win is None:
+            return False
+        # 這支常從「本局中止／逾時」這種錯誤路徑呼叫，補注失敗不能再往外丟例外，
+        # 否則會打斷呼叫端的收尾（計數已經記上，下一局照樣會補）。
+        try:
+            if t is None or cd_color is None:
+                t, cd_color = self._read_cd_real()
+            if frame is None:
+                frame = capture_client(self._win)
+            return self._maybe_anti_kick(frame, t, cd_color)
+        except CaptureUnavailable:
+            return False
+        except Exception:  # noqa: BLE001
+            logger.exception("防踢補注失敗（已計入未下注局數，下一局再補）")
+            return False
 
     def _mark_first_track_success(self) -> bool:
         """本局是否為「首次成功追到對象」。回傳 True 代表剛進入可跟注狀態。
@@ -1735,7 +1774,7 @@ class FollowEngine:
 
     def _anti_kick_plan(self) -> dict[str, int] | None:
         bcfg = self.cfg.betting
-        if not bcfg.anti_kick_enabled or self._stay_paused:
+        if not bcfg.anti_kick_enabled:
             return None
         amount = bcfg.anti_kick_amount or (min(self.cfg.chip_values) if self.cfg.chip_values else 1000)
         side = bcfg.anti_kick_side or "閒"
@@ -1764,7 +1803,7 @@ class FollowEngine:
         self.ctx.plan = plan
         self._session_rounds += 1
         self._session_stake += amount
-        self._stay_idle_rounds = 0
+        self._mark_bet_placed()
         self._save_round(frame, t_bet, bet=True)
         self._audit_after_bet(t_bet)
         self._ui_fail_streak = 0
@@ -1787,12 +1826,12 @@ class FollowEngine:
     def _should_early_anti_kick(self) -> bool:
         """是否本局直接補防踢、跳過慢統計 OCR。
 
-        條件：開了防踢、沒被暫停、對象已『確認離桌』(連續離桌達門檻)、且這局再沒下注
+        條件：開了防踢、對象已『確認離桌』(連續離桌達門檻)、且這局再沒下注
         累計就會達到補注門檻。此時沒有對象可跟，提前補注純賺（避免慢機器被踢）。
         對象在場時不走這條（仍照常讀統計跟注）。
         """
         bcfg = self.cfg.betting
-        if not bcfg.anti_kick_enabled or self._stay_paused:
+        if not bcfg.anti_kick_enabled:
             return False
         if not self._stay_absent_active:
             return False
@@ -1803,8 +1842,6 @@ class FollowEngine:
 
         回傳是否真的補注。補不成（時間已過）不歸零，下一局再試。
         """
-        if not self._should_count_stay_idle():
-            return False
         bcfg = self.cfg.betting
         if not bcfg.anti_kick_enabled:
             return False
@@ -1897,12 +1934,6 @@ class FollowEngine:
                     self.ctx = RoundContext()
                     self._cd_tracker.reset()
                     self._last_logged_t = None
-                if self._stay_paused:
-                    now = time.perf_counter()
-                    if now - self._last_stay_pause_log_mono >= 15.0:
-                        logger.info("追蹤對象已離桌，暫停中，不自動回桌（畫面=%s）", screen)
-                        self._last_stay_pause_log_mono = now
-                    return True
                 now = time.perf_counter()
                 if now - self._last_lobby_log_mono >= 10.0:
                     logger.info("掛房偵測到不在牌桌（%s），自動回桌…", screen)
@@ -1915,12 +1946,6 @@ class FollowEngine:
             if early:
                 return True
             if screen != "table":
-                if self._stay_paused:
-                    now = time.perf_counter()
-                    if now - self._last_stay_pause_log_mono >= 15.0:
-                        logger.info("追蹤對象已離桌，暫停中，不自動回桌（畫面=%s）", screen)
-                        self._last_stay_pause_log_mono = now
-                    return True
                 now = time.perf_counter()
                 if now - self._last_lobby_log_mono >= 10.0:
                     logger.info("掛房偵測到不在牌桌（%s），自動回桌…", screen)
@@ -1981,10 +2006,16 @@ class FollowEngine:
         panel_open = self._panel_open(frame)
         anchor_t = timing.countdown_anchor_t
 
+        # 防踢時間保險：太久沒下注（多半有整局沒被狀態機看到）→ 綠燈就強制補一手。
+        # 放在相位分派之前，任何相位都保護得到；統計表開著時不動（那是讀表中，會擋到畫面）。
+        if not panel_open and self._stay_force_anti_kick(frame, ocr_t, ocr_color):
+            return True
+
         # 看門狗：下注階段若卡太久（沒走到定稿），強制關表並重置，避免永遠卡死。
         if self.phase in (Phase.BET_OPEN, Phase.STATS_READY) and self._round_active_too_long():
             logger.warning("本局在下注階段逾時未定稿（卡住保護）→ 強制關表收尾、重置等下一局")
             self._recover_ui(capture_client(self._win), "單局逾時看門狗")
+            self._count_idle_round("單局逾時未下注")
             self._enter_locked(note="本局逾時，重置等下一局")
             return True
 
@@ -1993,8 +2024,14 @@ class FollowEngine:
                 if self._can_start_round(t, cd):
                     self._begin_round(t, frame=frame)
                 elif t > timing.open_stats_at_t:
-                    self._skip_late_round(frame, t)
+                    pass  # 太早，倒數還沒進開局窗，等下一圈
+                else:
+                    # 綠燈但接不了本局（漏拍／卡頓錯過開局窗）：遊戲端照樣記一局未押注，
+                    # 一定要計入防踢，來得及的話當場補一手。
+                    self._skip_late_round(frame, t, cd_color)
             else:
+                # 非綠燈＝本局已收掉：解除本局的計數鎖，下一局才能再計一次。
+                self.ctx.idle_counted = False
                 now = time.perf_counter()
                 if now - self._last_idle_wait_log_mono >= 20.0:
                     logger.info(

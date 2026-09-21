@@ -80,6 +80,8 @@ room:
   stay_pause_when_targets_absent: true
   stay_absent_rounds_to_pause: 2
   stay_stop_when_targets_absent: true
+  # 掛房固定守桌：對象全離桌只發 TG 通知，照常防踢補注、被踢自動回桌，對象回來自動恢復。
+  # （pause／stop 已停用，填了也一樣守桌——讓座就會被對手塞滿。）
   stay_on_absent: keep
   # 影像辨識「綁房間」：{暱稱: [桌號,...]}。只在指定桌才用影像樣板找該名字，其餘桌不找
   # （避免在別桌把路人誤比中跟錯人，也更快）。可由「啟動設定.txt → 影像辨識房間」覆寫。
@@ -97,10 +99,11 @@ betting:
   - 莊
   - 閒
   anti_kick_enabled: true
-  anti_kick_idle_rounds: 3
+  anti_kick_idle_rounds: 2
   anti_kick_side: 閒
   anti_kick_amount: 1000
   anti_kick_first_track_bet: true
+  anti_kick_max_idle_s: 150.0
   follow_ratio_enabled: true
   follow_ratio_min: 0.8
   follow_ratio_max: 0.99

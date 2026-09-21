@@ -90,6 +90,7 @@ def _read_launch_settings() -> dict:
         "probe_escalate_rounds": None,  # 連續幾局試探→升級反制；0=不升級；None=不指定
         "probe_escalate_action": None,  # 升級動作：pause/switch；None=不指定
         "follow_prev": None,  # 跟上一局（上局讀→本局下）；None=不指定(用 config 預設)
+        "anti_kick_rounds": None,  # 掛房防踢：連續幾局沒下注就補注；None=不指定
     }
     p = paths.launch_settings_path()
     if not p.is_file():
@@ -151,6 +152,10 @@ def _read_launch_settings() -> dict:
             digits = "".join(c for c in val if c.isdigit())
             if digits:
                 out["probe_escalate_rounds"] = int(digits)
+        elif any(k in key for k in ("防踢局數", "防踢", "補注局數", "anti_kick")):
+            digits = "".join(c for c in val if c.isdigit())
+            if digits:
+                out["anti_kick_rounds"] = max(1, int(digits))
         elif any(k in key for k in ("跟上一局", "跟上局", "上局跟", "延遲跟", "follow_prev")):
             if any(v in val for v in ("開", "啟", "是", "on", "true", "yes", "1")):
                 out["follow_prev"] = True
@@ -297,6 +302,7 @@ _LAUNCH_OPTION_KEYS: dict[str, tuple[str, ...]] = {
     "單注上限": ("單注上限", "单注上限", "最大跟注", "max_bet", "maxbet"),
     "單局總下注警告": ("單局總下注警告", "单局总下注警告", "總下注警告", "总下注警告", "單局總額警告", "round_total_warn"),
     "跟上一局": ("跟上一局", "跟上局", "上局跟", "延遲跟", "follow_prev"),
+    "防踢局數": ("防踢局數", "防踢", "補注局數", "anti_kick"),
     "反試探": ("反試探", "防試探", "試探防護", "probe_guard", "灑網", "試探升級", "試探換桌", "試探動作", "probe_escalate"),
     "影像辨識房間": ("影像辨識房間", "圖像辨識房間", "影像房間", "影像辨識", "template_room"),
     "影像比對門檻": ("影像比對門檻", "比對門檻", "影像門檻", "match_threshold"),
@@ -326,9 +332,17 @@ _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
         "# 【對象】掛房要跟注的對象暱稱，可填多個，用「、」或逗號分隔。\n"
         "#    例：對象=阿明、小華、大雄\n"
         "#    留空 = 沿用 follow_list.json 的名單。\n"
-        "#    若「指定的對象全部都不在這桌」→ 程式會暫停跟注（不補注防踢、\n"
-        "#    被踢回大廳也不會自動回桌），並透過 Telegram 通知。\n"
+        "#    若「指定的對象全部都不在這桌」→ 只發 Telegram 通知，程式繼續守桌：\n"
+        "#    照常補注防踢、被踢自動回桌，對象回來自動恢復跟注（絕不主動離桌）。\n"
         "對象="
+    ),
+    "防踢局數": (
+        "# 【防踢局數】掛房防踢：連續這麼多局我方都沒下注，就自動補一手 閒 1000。\n"
+        "#    遊戲是「5 局沒押注」就把人踢出房間，所以預設 2 局補一次，留 3 局緩衝，\n"
+        "#    就算電腦卡頓漏掉一兩局也不會被踢。填 1 = 每局沒跟到就補（最保險）。\n"
+        "#    另有時間保險：超過 150 秒沒下注也會強制補一手。\n"
+        "#    留空 = 用預設 2。（只影響掛房模式）\n"
+        "防踢局數=2"
     ),
     "跟注比例": (
         "# 【跟注比例（倍數）】跟注金額 = 對方金額 × 倍數，再無條件進位到整數注（最低 1000）。\n"
@@ -930,6 +944,10 @@ def main() -> int:
     fp = settings.get("follow_prev")
     if fp is not None:
         engine.cfg.betting.follow_prev_round = bool(fp)
+    # 掛房防踢：連續幾局沒下注就補一手（遊戲 5 局未押注會踢人）
+    akr = settings.get("anti_kick_rounds")
+    if akr is not None:
+        engine.cfg.betting.anti_kick_idle_rounds = int(akr)
     # 影像辨識綁房間：覆寫 config，並重建引擎對照表（只在指定桌才找這些名字）
     ntr = settings.get("name_template_rooms")
     if ntr:
@@ -1040,20 +1058,26 @@ def main() -> int:
         print(f"掛房追蹤對象：{('、'.join(tgt) if tgt else '（無）')}")
         if engine.cfg.room.stay_pause_when_targets_absent:
             n = engine.cfg.room.stay_absent_rounds_to_pause
-            mode = (getattr(engine.cfg.room, "stay_on_absent", "keep") or "keep").lower()
-            if mode == "stop":
+            print(
+                f"對象全離桌偵測：連續 {n} 局都讀不到任何對象 → Telegram 通知，但持續防踢守桌，"
+                "對象回來自動恢復跟注"
+            )
+        if bset.anti_kick_enabled:
+            amt = bset.anti_kick_amount or (
+                min(engine.cfg.chip_values) if engine.cfg.chip_values else 1000
+            )
+            print(
+                f"防踢守桌：連續 {bset.anti_kick_idle_rounds} 局沒下注 → 自動補注 "
+                f"{bset.anti_kick_side} {amt:,}（遊戲 5 局未押注會踢人）"
+            )
+            if bset.anti_kick_max_idle_s > 0:
                 print(
-                    f"對象全離桌偵測：連續 {n} 局統計表都讀不到任何對象 → Telegram 通知後停止程式"
+                    f"　　　　　時間保險：超過 {bset.anti_kick_max_idle_s:.0f} 秒沒下注（整局沒偵測到）"
+                    "也強制補一手"
                 )
-            elif mode == "pause":
-                print(
-                    f"對象全離桌偵測：連續 {n} 局都讀不到任何對象 → Telegram 通知後暫停跟注、不回桌"
-                )
-            else:
-                print(
-                    f"對象全離桌偵測：連續 {n} 局都讀不到任何對象 → Telegram 通知，但持續防踢守桌，"
-                    "對象回來自動恢復跟注"
-                )
+            print("　　　　　沒對象也照補、被踢自動回桌，指定桌滿桌時先守住現在這桌 → 永不主動離桌")
+        else:
+            print("防踢守桌：關閉（config anti_kick_enabled=false）")
     if engine.dry_run:
         print("真下注：python -m star_follow.tools.run --live")
         print("標記籌碼：python -m star_follow.tools.mark_chips")
