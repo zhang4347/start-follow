@@ -317,7 +317,7 @@ _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
     ),
     "桌號": (
         "# 【桌號】掛房要固定待著的桌號（例：5）。\n"
-        "#    被踢出或當機跳回大廳時，程式會自動回到這一桌。\n"
+        "#    被踢出或跳回大廳時不會自動回桌，會發 TG 提醒手動回桌。\n"
         "#    留空或填 0 = 不指定（待在當前桌；回大廳時回任一桌）。\n"
         "桌號="
     ),
@@ -333,7 +333,7 @@ _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
         "#    例：對象=阿明、小華、大雄\n"
         "#    留空 = 沿用 follow_list.json 的名單。\n"
         "#    若「指定的對象全部都不在這桌」→ 只發 Telegram 通知，程式繼續守桌：\n"
-        "#    照常補注防踢、被踢自動回桌，對象回來自動恢復跟注（絕不主動離桌）。\n"
+        "#    照常補注防踢，對象回來自動恢復跟注（絕不主動離桌；被踢只發 TG 提醒）。\n"
         "對象="
     ),
     "防踢局數": (
@@ -1051,7 +1051,7 @@ def main() -> int:
                 f"T={t.finalize_at_t} 定稿（僅 T>={t.min_round_start_t} 且錨定成功才開局）"
             )
         if engine.cfg.room.stay_table:
-            print(f"掛房固定桌號：No.{engine.cfg.room.stay_table}（被踢/當機會自動回此桌）")
+            print(f"掛房固定桌號：No.{engine.cfg.room.stay_table}（被踢不自動回桌，離桌會發 TG 提醒）")
         else:
             print("掛房未指定桌號（待在當前桌；回大廳時回任一桌）。可在啟動設定填『桌號=5』")
         tgt = engine.cfg.room.stay_targets or fl.active()
@@ -1075,7 +1075,7 @@ def main() -> int:
                     f"　　　　　時間保險：超過 {bset.anti_kick_max_idle_s:.0f} 秒沒下注（整局沒偵測到）"
                     "也強制補一手"
                 )
-            print("　　　　　沒對象也照補、被踢自動回桌，指定桌滿桌時先守住現在這桌 → 永不主動離桌")
+            print("　　　　　沒對象也照補，指定桌滿桌時先守住現在這桌 → 永不主動離桌（被踢發 TG 提醒）")
         else:
             print("防踢守桌：關閉（config anti_kick_enabled=false）")
     if engine.dry_run:

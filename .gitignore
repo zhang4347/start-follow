@@ -34,3 +34,6 @@ account_name_*.png
 .idea/
 .DS_Store
 Thumbs.db
+
+# ===== 機密：Telegram bot token（打包進 exe，原始碼不公開）=====
+star_follow/_secrets.py

@@ -33,6 +33,13 @@ Copy-Item "$sysTess\tesseract.exe" $pkgTess -Force
 Copy-Item "$sysTess\*.dll" $pkgTess -Force
 Write-Host "  已同步 -> star_follow\tesseract（打包與開發共用）"
 
+# Telegram token 放在 .gitignore 的 star_follow\_secrets.py；少了它打出來的版本發不了 TG。
+$secrets = ".\star_follow\_secrets.py"
+if (-not (Select-String -Path $secrets -Pattern 'BOT_TOKEN\s*=\s*"\d+:' -Quiet -ErrorAction SilentlyContinue)) {
+  Write-Host "打包中止：缺 $secrets 或裡面沒有 BOT_TOKEN（格式：BOT_TOKEN = `"數字:...`"）" -ForegroundColor Red
+  exit 1
+}
+
 Write-Host "[1/5] PyInstaller 打包中..." -ForegroundColor Cyan
 $buildStart = Get-Date
 & $py -m PyInstaller --noconfirm --clean star_follow.spec 2>&1 | Out-Null

@@ -109,7 +109,7 @@ class RoomConfig:
     # 黏桌：連續幾局沒跟到邊注（含 OCR 暫時漏讀）才換桌。設 >1 可容忍偶發漏讀，
     # 避免對象其實還在下、卻因一次讀失敗就提早換桌。
     patrol_leave_after_idle: int = 2
-    # 掛房（stay）專用：指定要固定待著的桌號。被踢/當機回大廳時，會自動回到這一桌。
+    # 掛房（stay）專用：指定要固定待著的桌號。被踢/當機回大廳時不自動回桌，只發 TG 提醒手動回桌。
     # 0 = 不指定（待在當前桌，回大廳時回任一桌）。
     stay_table: int = 0
     # 掛房指定追蹤對象（覆寫 follow_list.json）。空 = 沿用 follow_list.json。
@@ -119,7 +119,7 @@ class RoomConfig:
     # 連續這麼多局都讀不到任何指定對象，才判定「對象全離桌」（容忍偶發漏讀）。
     stay_absent_rounds_to_pause: int = 1
     # 對象全離桌時的處置：掛房固定「守桌」——只發 TG 通知，程式照常跑（繼續防踢補注、
-    # 被踢照樣自動回桌），對象某局又出現就自動恢復跟注。對手會一直換帳號進出，我方一旦
+    # 被踢不自動回桌、發 TG 提醒），對象某局又出現就自動恢復跟注。對手會一直換帳號進出，我方一旦
     # 讓座就會被塞滿，所以絕不因為沒對象而停手。舊的 pause／stop 已停用，僅保留讀取相容。
     stay_on_absent: str = "keep"
     # 舊設定（相容用，已不影響行為）。
@@ -194,8 +194,13 @@ class BettingConfig:
 
 # 內建 Telegram 通知預設：放在「程式碼」裡，才會被打包進 exe，並隨自動更新送到
 # 每一台（含自動更新者——他們的 config.yaml 會被保留、拿不到新 token，所以不能只放
-# config.yaml）。config.yaml 的 bot_token/chat_id 留空就用這組；要換 bot 改這裡即可。
-DEFAULT_BOT_TOKEN = "8893028334:AAGNJQt5djgMjjmCswxfwTUdh2h7VdvoXMM"
+# config.yaml）。config.yaml 的 bot_token/chat_id 留空就用這組。
+# token 是機密：放在 star_follow/_secrets.py（已 .gitignore，不會上 GitHub），打包時編進 exe；
+# 要換 bot 改 _secrets.py 再重新打包。缺檔時 token 為空 → 通知自動略過、不影響跟注。
+try:
+    from star_follow._secrets import BOT_TOKEN as DEFAULT_BOT_TOKEN
+except ImportError:
+    DEFAULT_BOT_TOKEN = ""
 DEFAULT_CHAT_ID = "-5153638599"
 
 
@@ -584,7 +589,8 @@ def save_config(cfg: AppConfig, path: Path | str | None = None) -> Path:
     }
     data["telegram"] = {
         "enabled": cfg.telegram.enabled,
-        "bot_token": cfg.telegram.bot_token,
+        # 內建 token 不寫回 config.yaml（config.yaml 會進 git／公開 repo）
+        "bot_token": "" if cfg.telegram.bot_token == DEFAULT_BOT_TOKEN else cfg.telegram.bot_token,
         "chat_id": cfg.telegram.chat_id,
         "interval_min": cfg.telegram.interval_min,
         "report_on_start": cfg.telegram.report_on_start,

@@ -53,6 +53,11 @@ _PHASE_LABEL: dict[str, str] = {
     PHASE_UNKNOWN: "無法確認",
 }
 
+def phase_label(phase: str) -> str:
+    """畫面階段的中文名稱（通知／log 用）。"""
+    return _PHASE_LABEL.get(phase, phase)
+
+
 _PHASE_ACTION: dict[str, str] = {
     PHASE_TABLE: "無需回桌",
     PHASE_ENTRY: "點『隨機選台』進桌",

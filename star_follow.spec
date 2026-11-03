@@ -95,6 +95,7 @@ hiddenimports = [
     "pydirectinput",
     "star_follow.monitor.sheet_uploader",
     "star_follow.update.updater",
+    "star_follow._secrets",  # Telegram token（.gitignore，不在 repo；build_release.ps1 會先確認存在）
     # HTTPS 相關（自動更新／Google 試算表上傳都需要）
     "ssl",
     "_ssl",

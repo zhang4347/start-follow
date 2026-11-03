@@ -80,7 +80,7 @@ room:
   stay_pause_when_targets_absent: true
   stay_absent_rounds_to_pause: 2
   stay_stop_when_targets_absent: true
-  # 掛房固定守桌：對象全離桌只發 TG 通知，照常防踢補注、被踢自動回桌，對象回來自動恢復。
+  # 掛房固定守桌：對象全離桌只發 TG 通知，照常防踢補注，對象回來自動恢復；被踢不自動回桌、發 TG 提醒。
   # （pause／stop 已停用，填了也一樣守桌——讓座就會被對手塞滿。）
   stay_on_absent: keep
   # 影像辨識「綁房間」：{暱稱: [桌號,...]}。只在指定桌才用影像樣板找該名字，其餘桌不找
@@ -121,7 +121,7 @@ betting:
   new_shoe_bead_threshold: 0.003
 telegram:
   enabled: false
-  bot_token: 8893028334:AAGNJQt5djgMjjmCswxfwTUdh2h7VdvoXMM
+  bot_token: ''
   chat_id: '-5153638599'
   interval_min: 30.0
   report_on_start: true

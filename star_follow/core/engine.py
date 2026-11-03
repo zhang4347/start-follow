@@ -37,6 +37,10 @@ from star_follow.paths import logs_dir as _logs_dir
 
 LOG_DIR = _logs_dir()
 
+# 掛房離桌提醒：連續這麼久都不在牌桌／找不到遊戲視窗才發 TG（濾掉轉場、彈窗的瞬間誤判）
+_STAY_LEFT_CONFIRM_S = 10.0
+_NOWIN_CONFIRM_S = 30.0
+
 
 class Phase(Enum):
     IDLE = auto()
@@ -130,6 +134,11 @@ class FollowEngine:
         self._stopped_reason: str | None = None
         self._capture_unavail_since: float | None = None  # 畫面暫時抓不到的起始時點（None=正常）
         self._last_lobby_log_mono = 0.0
+        # 掛房離桌提醒：不自動回桌，連續確認不在牌桌／找不到視窗一段時間後發一次 TG。
+        self._stay_off_table_since: float | None = None
+        self._stay_left_notified = False
+        self._nowin_since: float | None = None
+        self._nowin_notified = False
         self._stay_at_table_grace_until = 0.0
         self._last_idle_wait_log_mono = 0.0
         self._win_logged = False
@@ -1547,39 +1556,57 @@ class FollowEngine:
             daemon=True,
         ).start()
 
-    def _stay_return_to_table(self, win) -> bool:
-        """掛房被踢回大廳：自動導覽回任一百家樂桌；若有指定桌號，再切到該桌號。"""
-        from star_follow.automation import lobby_nav
-        from star_follow.automation.room_nav import read_current_table, switch_to_table
+    def _stay_table_tag(self) -> str:
+        return f"No.{self.cfg.room.stay_table} 牌桌" if self.cfg.room.stay_table else "牌桌"
 
-        ok = lobby_nav.return_to_baccarat_table(win, self.cfg, lambda: capture_client(win))
-        if not ok:
-            logger.warning("自動回桌失敗（暫時導覽不到牌桌），稍後重試")
-            return False
-        target = self.cfg.room.stay_table
-        if target:
-            # 隨機進桌後不一定是指定桌號，讀目前桌號；不符就切過去
-            cur = read_current_table(capture_client(win), self.cfg, win)
-            if cur != target:
-                logger.info("回到 No.%s，需切換到指定桌號 No.%s", cur, target)
-                if switch_to_table(win, self.cfg, target, capture_fn=lambda: capture_client(win)):
-                    logger.info("已切換回指定桌號 No.%s", target)
-                else:
-                    logger.warning("切換到指定桌號 No.%s 失敗，下一輪重試", target)
-                    return False
-            else:
-                logger.info("回到的就是指定桌號 No.%s", target)
-        # 重置局狀態，下一輪正常跑
+    def _stay_handle_off_table(self, screen: str) -> None:
+        """掛房偵測到不在牌桌：不自動回桌（業主要求固定一桌、避免導覽亂點），
+        連續確認不在桌 _STAY_LEFT_CONFIRM_S 秒後發一次 Telegram 提醒手動回桌。
+
+        要連續確認才發，避免畫面閃一下（轉場／彈窗）就誤報；同一次離桌只發一則。
+        """
+        from star_follow.automation import lobby_nav
+
+        now = time.monotonic()
+        if self._stay_off_table_since is None:
+            self._stay_off_table_since = now
+            if self.phase != Phase.IDLE:
+                self.phase = Phase.IDLE
+                self.ctx = RoundContext()
+                self._cd_tracker.reset()
+                self._last_logged_t = None
+        gone_s = now - self._stay_off_table_since
+        where = lobby_nav.phase_label(screen)
+        if not self._stay_left_notified and gone_s >= _STAY_LEFT_CONFIRM_S:
+            self._stay_left_notified = True
+            logger.warning("掛房已離開 %s（目前畫面：%s），不自動回桌，已發 TG 提醒", self._stay_table_tag(), where)
+            self._notify_targets_gone(
+                f"⚠ 已離開 {self._stay_table_tag()}（目前畫面：{where}）\n"
+                "程式不會自動回桌，請手動回到牌桌，回桌後會自動恢復跟注。"
+            )
+        pc = time.perf_counter()
+        if pc - self._last_lobby_log_mono >= 10.0:
+            logger.info("掛房偵測到不在牌桌（%s，已 %.0f 秒），等待手動回桌…", where, gone_s)
+            self._last_lobby_log_mono = pc
+        time.sleep(1.0)  # 不在桌時沒事可做，放慢輪詢避免一直截圖辨識
+
+    def _stay_back_on_table(self) -> None:
+        """掛房確認人在牌桌：若先前判定離桌，重置局狀態恢復跟注；有發過離桌通知就補發回桌通知。"""
+        if self._stay_off_table_since is None:
+            return
+        gone_s = time.monotonic() - self._stay_off_table_since
+        self._stay_off_table_since = None
         self.phase = Phase.IDLE
         self.ctx = RoundContext()
         self._cd_tracker.reset()
-        self._col_cache = {}  # 換桌後欄位版面不同，清掉跨局快取，下一局整排重掃
+        self._col_cache = {}  # 可能回到別桌、欄位版面不同，清掉跨局快取，下一局整排重掃
         self._stay_idle_rounds = 0
         self._stay_last_bet_mono = time.monotonic()  # 剛重新入座，遊戲端的未押注計數也歸零
         self._stay_first_track_done = False
-        self._stay_at_table_grace_until = time.monotonic() + 30.0
-        logger.info("掛房已回到牌桌，恢復跟注（30s 內不因畫面閃爍重跑回桌）")
-        return True
+        if self._stay_left_notified:
+            self._stay_left_notified = False
+            logger.info("已回到牌桌（離桌約 %.0f 秒），恢復跟注", gone_s)
+            self._notify_targets_gone(f"✅ 已回到 {self._stay_table_tag()}（離桌約 {gone_s:.0f} 秒），恢復跟注")
 
     def _stay_ensure_target_table(self, win) -> bool:
         """掛房固定桌號：人在牌桌、但不是指定桌（例如回桌時指定桌滿桌、落在別桌）→
@@ -1589,7 +1616,7 @@ class FollowEngine:
           - 滿桌切不過去 → 回傳 False，讓本輪照常跑局流程，在「現在這張桌」也照樣
             補注防踢（不然會在等位子的期間被這張桌踢出去，又被對手塞滿），
             同時每 5 秒繼續重試切回指定桌，直到有位子；
-          - 切桌過程又被踢出 → 下一輪會先被「不在牌桌」分支接住、重新進場，
+          - 切桌過程又被踢出 → 下一輪會先被「不在牌桌」分支接住（發 TG 提醒手動回桌），
             不會卡在「一直換房卻沒發現又被踢」的狀態。
         讀不到桌號就不動作（避免誤切）。
         """
@@ -1628,7 +1655,7 @@ class FollowEngine:
     def _update_stay_presence(self) -> None:
         """掛房：依本局是否讀到任何指定對象，更新「對象全離桌」狀態並發 Telegram 通知。
 
-        掛房固定「守桌」：對象全不在也照常補注防踢、被踢照樣自動回桌，對象回來自動
+        掛房固定「守桌」：對象全不在也照常補注防踢（被踢不自動回桌、改發 TG 提醒），對象回來自動
         恢復跟注。對手會一直換帳號進出，我方一旦讓座就會被塞滿，所以絕不因為沒對象
         而停手（舊的 pause／stop 處置已停用）。
 
@@ -1664,7 +1691,7 @@ class FollowEngine:
         self._stay_first_track_done = False  # 對象確認不在；回來後可再觸發首次保險閒注
         msg = f"{table_tag} 統計表未見任何追蹤對象"
 
-        # 守桌：只通知，程式照常跑——繼續防踢補注、被踢照樣自動回桌，
+        # 守桌：只通知，程式照常跑——繼續防踢補注（被踢只發 TG 提醒、不自動回桌），
         # 待對象某局又出現就自動恢復跟注。
         if not self._stay_pause_notified:
             self._stay_pause_notified = True
@@ -1674,7 +1701,7 @@ class FollowEngine:
         now = time.perf_counter()
         if now - self._last_stay_pause_log_mono >= 15.0:
             logger.info(
-                "對象全離桌：持續防踢補注／被踢自動回桌，守住%s 待對象回來",
+                "對象全離桌：持續防踢補注，守住%s 待對象回來",
                 table_tag,
             )
             self._last_stay_pause_log_mono = now
@@ -1905,6 +1932,16 @@ class FollowEngine:
                     self.cfg.window.title_substring,
                 )
                 self._last_nowin_log_mono = now
+            # 遊戲視窗不見（星城關掉／當機）也算離桌：連續確認後發一次 TG
+            mono = time.monotonic()
+            if self._nowin_since is None:
+                self._nowin_since = mono
+            if not self._nowin_notified and mono - self._nowin_since >= _NOWIN_CONFIRM_S:
+                self._nowin_notified = True
+                self._notify_targets_gone(
+                    f"⚠ 找不到星城遊戲視窗（已 {mono - self._nowin_since:.0f} 秒），可能已關閉或當機\n"
+                    "程式不會自動開遊戲，請手動開啟並進到牌桌，之後會自動恢復跟注。"
+                )
             if self.phase != Phase.IDLE:
                 self.phase = Phase.IDLE
                 self.ctx = RoundContext()
@@ -1914,6 +1951,11 @@ class FollowEngine:
         if self._win is None:
             self._win_logged = False
         self._win = win
+        if self._nowin_since is not None:
+            if self._nowin_notified:
+                self._notify_targets_gone("✅ 已重新找到星城遊戲視窗")
+            self._nowin_since = None
+            self._nowin_notified = False
         frame = capture_client(win)
         # 預設本圈「未確認穩定在桌」；確認在桌且不需回桌/切桌時才在下方設為 True。
         # 任何在確認前就 return 的分支（不在桌、回桌中、切桌中）都會維持 False → 擋住上傳。
@@ -1929,16 +1971,8 @@ class FollowEngine:
             if screen != "table" and time.monotonic() < self._stay_at_table_grace_until:
                 return True
             if screen != "table":
-                if self.phase != Phase.IDLE:
-                    self.phase = Phase.IDLE
-                    self.ctx = RoundContext()
-                    self._cd_tracker.reset()
-                    self._last_logged_t = None
-                now = time.perf_counter()
-                if now - self._last_lobby_log_mono >= 10.0:
-                    logger.info("掛房偵測到不在牌桌（%s），自動回桌…", screen)
-                    self._last_lobby_log_mono = now
-                self._stay_return_to_table(win)
+                # 不自動回桌：只提醒（連續確認後發 TG），等使用者手動回桌
+                self._stay_handle_off_table(screen)
                 return True
         else:
             # 掛房 IDLE：節流大廳檢查，不每圈 prepare（避免誤點五局、拖慢 T 軸）
@@ -1946,13 +1980,10 @@ class FollowEngine:
             if early:
                 return True
             if screen != "table":
-                now = time.perf_counter()
-                if now - self._last_lobby_log_mono >= 10.0:
-                    logger.info("掛房偵測到不在牌桌（%s），自動回桌…", screen)
-                    self._last_lobby_log_mono = now
-                self._stay_return_to_table(win)
+                self._stay_handle_off_table(screen)
                 return True
             self._cached_screen = "table"
+            self._stay_back_on_table()
             # 在牌桌但可能不是指定桌（回桌時指定桌滿桌、落在別桌）→ 持續切回指定桌
             if self._stay_ensure_target_table(win):
                 return True
