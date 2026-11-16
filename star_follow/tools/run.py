@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -122,7 +123,9 @@ def _read_launch_settings() -> dict:
         key = key.strip().replace(" ", "")
         val = val.strip().replace(" ", "")
         if any(k in key for k in ("模式", "mode")):
-            if any(v in val for v in ("通知", "盯場", "通報", "雷達", "notify")):
+            if any(v in val for v in ("搶房", "搶桌", "抢房", "grab")):
+                out["mode"] = "grab"
+            elif any(v in val for v in ("通知", "盯場", "通報", "雷達", "notify")):
                 out["mode"] = "notify"
             elif any(v in val for v in ("換房", "巡房", "patrol")):
                 out["mode"] = "patrol"
@@ -803,6 +806,61 @@ def _selftest() -> int:
     return 0 if ok else 1
 
 
+def _run_grab(engine: FollowEngine, settings: dict, log_path) -> int:
+    """搶房模式：一直搶「桌號」那間，搶到發 TG，之後補注守房到使用者關程式。"""
+    from star_follow.core.grab_room import GrabRoomRunner
+    from star_follow.version import __version__ as _ver
+
+    target = engine.cfg.room.stay_table
+    print(f"StarFollow v{_ver}　【搶房模式】")
+    print(f"記錄檔：{log_path}")
+    # 開啟時直接問要搶幾號（不用改記事本）；直接按 Enter＝用啟動設定的『桌號』／--table
+    if sys.stdin is not None and sys.stdin.isatty():
+        hint = f"直接按 Enter = No.{target}" if target else "例如輸入 3 再按 Enter"
+        for _ in range(5):
+            try:
+                ans = input(f"\n要搶幾號房？（{hint}）：").strip()
+            except (EOFError, KeyboardInterrupt):
+                ans = ""
+                break
+            ans = ans.translate(str.maketrans("０１２３４５６７８９", "0123456789")).lstrip("Nn").lstrip("Oo").lstrip(".")
+            if not ans and target:
+                break
+            if ans.isdigit() and 1 <= int(ans) <= 30:
+                target = int(ans)
+                break
+            print("請輸入 1~30 的房號數字。")
+        engine.cfg.room.stay_table = target
+    if not target:
+        print("搶房模式需要指定房號：請重開後輸入房號，或在〔啟動設定.txt〕填『桌號=5』。")
+        input("\n按 Enter 關閉...")
+        return 1
+    engine.cfg.room.mode = "stay"
+    engine.cfg.room.notify_only = False
+    engine.cfg.betting.anti_kick_enabled = True  # 搶房一定要補注，否則會被目前這間踢出
+    bset = engine.cfg.betting
+    amt = bset.anti_kick_amount or (min(engine.cfg.chip_values) if engine.cfg.chip_values else 1000)
+    print(f"搶房目標：No.{target}（請先自己進任一間房；程式開清單一直點『前往』，滿房就繼續點）")
+    print(
+        f"防踢補注：每 {bset.anti_kick_idle_rounds} 局（或超過 90 秒沒下）在目前房間補 "
+        f"{bset.anti_kick_side} {amt:,}，搶到後照樣補，維持待在房內"
+    )
+    print("離房判斷：左上角『No.X』讀不到 20 秒＝已離開房間 → 發 TG 並暫停（不會自己回房），手動回房後自動繼續")
+    print("Telegram：啟動／搶到／離開房間／回到房間時通知，另每小時回報一次運行狀態")
+    print("搶到房間後請關掉這個視窗，再開原本的跟注程式（StarFollow.exe）。")
+    if engine.dry_run:
+        print("⚠ 目前是測試模式（下注=關）：不會真的補注，房間可能會因 5 局未押注被踢！")
+    from star_follow.vision.ocr import warmup_ocr
+
+    warmup_ocr()
+    runner = GrabRoomRunner(engine, target)
+    try:
+        runner.run_loop()
+    except KeyboardInterrupt:
+        runner.stop()
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -813,6 +871,8 @@ def main() -> int:
     parser.add_argument("--add", type=str, help="新增跟注暱稱後結束（不啟動引擎）")
     parser.add_argument("--patrol", action="store_true", help="換房模式（巡房跟注），覆寫 config 的 room.mode")
     parser.add_argument("--stay", action="store_true", help="掛房模式（單桌跟注），覆寫 config 的 room.mode")
+    parser.add_argument("--grab", action="store_true", help="搶房模式：一直搶啟動設定的『桌號』，搶到發 TG 並補注守房")
+    parser.add_argument("--table", type=int, help="指定桌號（覆寫啟動設定的『桌號』；搶房/掛房用）")
     parser.add_argument("--selftest", action="store_true", help="自我檢查：確認設定檔/語言檔/OCR 可正常載入後結束")
     parser.add_argument(
         "--test-crop",
@@ -861,14 +921,19 @@ def main() -> int:
     if settings["balance_test"] and not (args.patrol or args.stay):
         return _balance_test()
 
-    # 自動更新：偵測到新版會下載換檔並重啟（此行之後就不會再往下執行）
-    try:
-        from star_follow.config import load_config
-        from star_follow.update.updater import maybe_update
+    grab = bool(args.grab) or settings["mode"] == "grab"
 
-        maybe_update(load_config().update)
-    except Exception:  # noqa: BLE001  更新流程任何錯誤都不應擋住正常啟動
-        pass
+    # 自動更新：偵測到新版會下載換檔並重啟（此行之後就不會再往下執行）
+    # 搶房模式不更新：換檔後重開的是「不帶參數」的主程式，會從搶房變成跟注模式；
+    # 交給跟注程式啟動時更新即可。
+    if not grab:
+        try:
+            from star_follow.config import load_config
+            from star_follow.update.updater import maybe_update
+
+            maybe_update(load_config().update)
+        except Exception:  # noqa: BLE001  更新流程任何錯誤都不應擋住正常啟動
+            pass
 
     # 模式：CLI > 設定檔 > config 預設
     if args.patrol:
@@ -906,6 +971,8 @@ def main() -> int:
     # 掛房：套用啟動設定的「桌號 / 對象」
     if settings.get("stay_table") is not None:
         engine.cfg.room.stay_table = settings["stay_table"]
+    if getattr(args, "table", None):
+        engine.cfg.room.stay_table = args.table
     if settings.get("stay_targets"):
         engine.cfg.room.stay_targets = list(settings["stay_targets"])
     # 掛房且有指定對象 → 用指定對象覆寫跟注名單（不動 follow_list.json）
@@ -966,6 +1033,8 @@ def main() -> int:
     pr = settings.get("patrol_rooms")
     if pr:
         engine.cfg.room.tables = list(pr)
+    if grab:
+        return _run_grab(engine, settings, log_path)
     t = engine.cfg.timing
     notify_only = getattr(engine.cfg.room, "notify_only", False)
     mode = "LIVE（含下注）" if not engine.dry_run else "dry-run（開關統計+OCR，不下注）"

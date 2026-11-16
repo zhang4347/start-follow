@@ -199,11 +199,78 @@ def read_current_table(frame: np.ndarray, cfg: AppConfig, win: GameWindow) -> in
     return None
 
 
-def list_is_open(frame: np.ndarray, cfg: AppConfig, win: GameWindow) -> bool:
-    """清單開啟時會有多個不重複的有效桌號（current + 其他，由上而下）。
+# 左上角「星城 No.X」房號標籤（參考解析度 1280x720；config 可用 roi.room_label 覆寫）。
+# 只有在百家樂房內才會出現，大廳／其他頁沒有 → 拿來判斷「在不在房內、在哪間」。
+_ROOM_LABEL_DEFAULT = [0, 0, 140, 34]
+_LABEL_PAT = re.compile(r"[Nn][OoQ0][.,·:]?\s*(\d{1,2})")
 
-    要求 ≥3 個不重複桌號，避免關閉時下注賠率區零星數字（1:30、1:12.1…）誤判。
+
+def read_room_label(frame: np.ndarray, cfg: AppConfig, win: GameWindow) -> int | None:
+    """讀左上角「No.X」房號；讀不到（不在房內／被擋住）回 None。
+
+    優先用 RapidOCR（實測 ~30ms、對淺色背景上的細字穩），不可用時退回 Tesseract。
     """
+    r = cfg.roi.get("room_label") or _ROOM_LABEL_DEFAULT
+    x, y, w, h = scale_rect(
+        list(r), cfg.window.reference_width, cfg.window.reference_height,
+        win.client_width, win.client_height,
+    )
+    crop = frame[y : y + h, x : x + w]
+    if crop.size == 0:
+        return None
+    valid = _valid_room_nos(cfg)
+    try:
+        from star_follow.vision.ocr import ocr_chinese_rapid
+
+        txt, _conf = ocr_chinese_rapid(np.ascontiguousarray(crop))
+    except Exception:  # noqa: BLE001
+        txt = ""
+    m = _LABEL_PAT.search(txt or "")
+    if m:
+        no = int(m.group(1))
+        return no if no in valid else None
+    if txt:  # RapidOCR 有讀到字但不是 No.X → 不在房內
+        return None
+    for no, _cy in _ocr_numbers_with_y(crop):  # RapidOCR 不可用時的退路
+        if no in valid:
+            return no
+    return None
+
+
+# 清單右上角標題「快速換桌」（參考解析度；config 可用 roi.room_list_title 覆寫）
+_LIST_TITLE_DEFAULT = [1060, 95, 140, 45]
+
+
+def list_title_visible(frame: np.ndarray, cfg: AppConfig, win: GameWindow) -> bool | None:
+    """用 RapidOCR 讀清單標題「快速換桌」。RapidOCR 不可用時回 None（交給舊方法）。"""
+    try:
+        from star_follow.vision.ocr import ocr_chinese_rapid, rapid_available
+
+        if not rapid_available():
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    r = cfg.roi.get("room_list_title") or _LIST_TITLE_DEFAULT
+    x, y, w, h = scale_rect(
+        list(r), cfg.window.reference_width, cfg.window.reference_height,
+        win.client_width, win.client_height,
+    )
+    crop = frame[y : y + h, x : x + w]
+    if crop.size == 0:
+        return False
+    txt, _conf = ocr_chinese_rapid(np.ascontiguousarray(crop))
+    return any(k in (txt or "") for k in ("快速", "換桌", "换桌", "速換", "速换"))
+
+
+def list_is_open(frame: np.ndarray, cfg: AppConfig, win: GameWindow) -> bool:
+    """清單是否開著。
+
+    優先看右上角標題「快速換桌」（準）；舊方法「≥3 個不重複桌號」會被牌桌上的
+    賠率數字（1:15 / 1:22 / 1:9.3…）誤判成清單開著，只在 RapidOCR 不可用時才用。
+    """
+    title = list_title_visible(frame, cfg, win)
+    if title is not None:
+        return title
     rows = read_list_rows(frame, cfg, win)
     distinct = {no for no, _ in rows}
     return len(distinct) >= 3
@@ -305,6 +372,54 @@ def confirm_switch(win: GameWindow, cfg: AppConfig) -> None:
         return
     time.sleep(0.4)  # 等確認視窗彈出
     click_at(win, pt[0], pt[1], backend=cfg.automation.ui_click_backend)
+
+
+def goto_is_lit(frame: np.ndarray, cfg: AppConfig, win: GameWindow, row_cy: int) -> bool:
+    """該列的「GO>」是不是亮的（可進）。滿房時是暗灰色。
+
+    GO 字樣在桌號列中心 y 上方約 5~30px、goto_x 附近；亮的時候是米黃色字。
+    實測亮 GO ≈9% 像素符合、暗 GO／目前所在房（沒有 GO）= 0%。
+    """
+    sx = win.client_width / max(1, cfg.window.reference_width)
+    sy = win.client_height / max(1, cfg.window.reference_height)
+    gx = _scaled_goto_x(cfg, win)
+    x0, x1 = int(gx - 12 * sx), int(gx + 33 * sx)
+    y0, y1 = int(row_cy - 30 * sy), int(row_cy - 4 * sy)
+    crop = frame[max(0, y0) : max(0, y1), max(0, x0) : max(0, x1)].astype(np.int16)
+    if crop.size == 0:
+        return False
+    r, g, b = crop[..., 0], crop[..., 1], crop[..., 2]
+    lit = (r > 190) & (g > 160) & (b < 190) & (r > b + 40)
+    return float(lit.mean()) >= 0.03
+
+
+def find_target_row(
+    win: GameWindow, cfg: AppConfig, capture_fn: Callable[[], np.ndarray], target_no: int
+) -> int | None:
+    """清單已開：找 target_no 那列的中心 y（目前頁有就直接回，沒有才回頂逐頁捲找）。不點擊。"""
+    for no, cy in read_list_rows(capture_fn(), cfg, win):
+        if no == target_no:
+            return cy
+    for _attempt in range(2):
+        scroll_to_top(win, cfg, capture_fn)
+        prev: tuple[int, ...] | None = None
+        for _page in range(cfg.room.max_scroll_pages + 2):
+            rows = read_list_rows(capture_fn(), cfg, win)
+            for no, cy in rows:
+                if no == target_no:
+                    return cy
+            page = tuple(no for no, _ in rows)
+            if page and page == prev:
+                break
+            prev = page
+            scroll_list(win, cfg)
+            time.sleep(0.18)
+    return None
+
+
+def click_goto_at(win: GameWindow, cfg: AppConfig, row_cy: int) -> None:
+    """點某列的「GO」（不按確認）。"""
+    click_at(win, _scaled_goto_x(cfg, win), row_cy, backend=cfg.automation.ui_click_backend)
 
 
 def _click_goto_row(win: GameWindow, cfg: AppConfig, capture_fn: Callable[[], np.ndarray],
