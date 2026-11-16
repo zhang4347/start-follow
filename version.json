@@ -1,6 +1,6 @@
 {
-    "version": "1.2.52",
-    "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.52/StarFollow_1.2.52.zip",
-    "sha256": "855ea0dc895650285be0d9e53ec954c978c50369810ab95a5b86a546c028e850",
-    "notes": "v1.2.52 新增搶房模式：先進任一間房，雙擊〔搶房.bat〕輸入要搶的房號；滿房會一直點 GO，搶到發 TG，期間自動補注防踢、每小時回報；離開房間會發 TG 並暫停（不自動回房）。"
+    "version": "1.2.53",
+    "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.53/StarFollow_1.2.53.zip",
+    "sha256": "f350a71c3dc9eccab76a7685713a5dc8f4fe0377cf45791de42743f6ae57f857",
+    "notes": "v1.2.53 新增操作介面：雙擊 StarFollow.exe 會先跳出設定視窗，選模式（換房／掛房／只通知／搶房）、下注開關、跟注設定、追蹤名單都能直接點選修改，按「儲存並開始」即執行；不用再開記事本。"
 }
