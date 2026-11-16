@@ -92,6 +92,7 @@ def _read_launch_settings() -> dict:
         "probe_escalate_action": None,  # 升級動作：pause/switch；None=不指定
         "follow_prev": None,  # 跟上一局（上局讀→本局下）；None=不指定(用 config 預設)
         "anti_kick_rounds": None,  # 掛房防踢：連續幾局沒下注就補注；None=不指定
+        "grab_table": None,  # 搶房要搶的房號；None=不指定(用桌號)
     }
     p = paths.launch_settings_path()
     if not p.is_file():
@@ -139,6 +140,13 @@ def _read_launch_settings() -> dict:
                 out["balance_test"] = True
             elif any(v in val for v in ("檢查", "檢測", "自我", "selftest", "test")):
                 out["selftest"] = True
+        elif "搶房" in key:
+            # 「搶房房號」：要排在「桌號」之前（雖然目前 key 不含『桌』，保險起見先攔）
+            import re as _re
+
+            m = _re.search(r"\d+", val)
+            if m:
+                out["grab_table"] = int(m.group())
         elif any(k in key for k in ("單局總下注警告", "单局总下注警告", "總下注警告", "总下注警告", "單局總額警告", "round_total_warn")):
             # 註：這條必須排在「下注」之前判斷——key 含「下注」字樣，否則會被下注分支吃掉。
             out["round_total_warn"] = _parse_amount_setting(val)
@@ -310,6 +318,7 @@ _LAUNCH_OPTION_KEYS: dict[str, tuple[str, ...]] = {
     "影像辨識房間": ("影像辨識房間", "圖像辨識房間", "影像房間", "影像辨識", "template_room"),
     "影像比對門檻": ("影像比對門檻", "比對門檻", "影像門檻", "match_threshold"),
     "影像比對領先差": ("影像比對領先差", "領先差", "比對領先", "match_margin"),
+    "搶房房號": ("搶房",),
 }
 _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
     "帳號": (
@@ -415,6 +424,10 @@ _LAUNCH_OPTION_BLOCKS: dict[str, str] = {
         "# 【影像比對領先差】最佳分數要「領先第二名」超過這個差距才採用（避免兩個長相相近的\n"
         "#    名字分不清而跟錯人）。分數很接近時調低、容易跟錯時調高。留空 = 用預設 0.04。\n"
         "影像比對領先差=0.04"
+    ),
+    "搶房房號": (
+        "# 【搶房房號】搶房模式要搶的房號（例：3）。請先自己進任一間房再開始。\n"
+        "搶房房號="
     ),
 }
 
@@ -806,7 +819,7 @@ def _selftest() -> int:
     return 0 if ok else 1
 
 
-def _run_grab(engine: FollowEngine, settings: dict, log_path) -> int:
+def _run_grab(engine: FollowEngine, settings: dict, log_path, *, ask: bool = True) -> int:
     """搶房模式：一直搶「桌號」那間，搶到發 TG，之後補注守房到使用者關程式。"""
     from star_follow.core.grab_room import GrabRoomRunner
     from star_follow.version import __version__ as _ver
@@ -815,7 +828,7 @@ def _run_grab(engine: FollowEngine, settings: dict, log_path) -> int:
     print(f"StarFollow v{_ver}　【搶房模式】")
     print(f"記錄檔：{log_path}")
     # 開啟時直接問要搶幾號（不用改記事本）；直接按 Enter＝用啟動設定的『桌號』／--table
-    if sys.stdin is not None and sys.stdin.isatty():
+    if ask and sys.stdin is not None and sys.stdin.isatty():
         hint = f"直接按 Enter = No.{target}" if target else "例如輸入 3 再按 Enter"
         for _ in range(5):
             try:
@@ -873,6 +886,8 @@ def main() -> int:
     parser.add_argument("--stay", action="store_true", help="掛房模式（單桌跟注），覆寫 config 的 room.mode")
     parser.add_argument("--grab", action="store_true", help="搶房模式：一直搶啟動設定的『桌號』，搶到發 TG 並補注守房")
     parser.add_argument("--table", type=int, help="指定桌號（覆寫啟動設定的『桌號』；搶房/掛房用）")
+    parser.add_argument("--ui", action="store_true", help="開啟操作介面（打包版雙擊 exe 預設就會開）")
+    parser.add_argument("--no-ui", action="store_true", help="不開操作介面，直接照啟動設定.txt 執行")
     parser.add_argument("--selftest", action="store_true", help="自我檢查：確認設定檔/語言檔/OCR 可正常載入後結束")
     parser.add_argument(
         "--test-crop",
@@ -904,6 +919,42 @@ def main() -> int:
     # 啟動設定檔（雙擊 exe 時用；命令列參數優先）
     # 先做智能合併：保留舊值、補上新選項（自動更新者的舊檔才看得到新選項）
     _migrate_launch_settings()
+
+    # 操作介面：打包版「雙擊 exe（沒帶任何參數）」或 --ui 時先開視窗讓使用者選模式／改設定。
+    # 先做自動更新再開視窗（更新後重開的新版會再開一次視窗）；視窗回傳要做的動作。
+    from star_follow import paths as _paths
+
+    update_checked = False
+    show_ui = bool(args.ui) or (_paths.is_frozen() and len(sys.argv) == 1 and not args.no_ui)
+    if show_ui:
+        try:
+            from star_follow.config import load_config
+            from star_follow.update.updater import maybe_update
+
+            maybe_update(load_config().update)
+        except Exception:  # noqa: BLE001
+            pass
+        update_checked = True
+        print("已開啟操作介面視窗（若沒看到，請看工作列）…")
+        try:
+            from star_follow.tools.launcher_ui import run_launcher
+
+            act = run_launcher()
+        except Exception as exc:  # noqa: BLE001  介面壞掉也不能擋住程式：退回照設定檔執行
+            logging.getLogger(__name__).exception("操作介面開啟失敗")
+            print(f"操作介面開啟失敗（{exc}），改照〔啟動設定.txt〕直接執行。")
+            act = {"action": "start"}
+        if not act:
+            return 0
+        if act["action"] == "selftest":
+            return _selftest()
+        if act["action"] == "list_windows":
+            return _list_windows()
+        if act["action"] == "balance_test":
+            return _balance_test()
+        if act["action"] == "grab":
+            args.grab = True
+            args.table = int(act["table"])
     settings = _read_launch_settings()
 
     if getattr(args, "test_crop", None):
@@ -926,7 +977,7 @@ def main() -> int:
     # 自動更新：偵測到新版會下載換檔並重啟（此行之後就不會再往下執行）
     # 搶房模式不更新：換檔後重開的是「不帶參數」的主程式，會從搶房變成跟注模式；
     # 交給跟注程式啟動時更新即可。
-    if not grab:
+    if not grab and not update_checked:
         try:
             from star_follow.config import load_config
             from star_follow.update.updater import maybe_update
@@ -971,6 +1022,8 @@ def main() -> int:
     # 掛房：套用啟動設定的「桌號 / 對象」
     if settings.get("stay_table") is not None:
         engine.cfg.room.stay_table = settings["stay_table"]
+    if grab and settings.get("grab_table"):
+        engine.cfg.room.stay_table = settings["grab_table"]  # 搶房：優先用「搶房房號」
     if getattr(args, "table", None):
         engine.cfg.room.stay_table = args.table
     if settings.get("stay_targets"):
@@ -1034,7 +1087,7 @@ def main() -> int:
     if pr:
         engine.cfg.room.tables = list(pr)
     if grab:
-        return _run_grab(engine, settings, log_path)
+        return _run_grab(engine, settings, log_path, ask=not getattr(args, "table", None))
     t = engine.cfg.timing
     notify_only = getattr(engine.cfg.room, "notify_only", False)
     mode = "LIVE（含下注）" if not engine.dry_run else "dry-run（開關統計+OCR，不下注）"

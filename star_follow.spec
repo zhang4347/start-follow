@@ -150,7 +150,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["PyQt5", "tkinter", "matplotlib"],
+    excludes=["PyQt5", "matplotlib"],  # tkinter 留著：操作介面要用
     noarchive=False,
 )
 
