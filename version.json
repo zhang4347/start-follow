@@ -1,6 +1,6 @@
 {
-  "version": "1.2.51",
-  "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.51/StarFollow_1.2.51.zip",
-  "sha256": "d1f4ccada9b17bdc6f7227a0b13017ca4b2308c4acd602f62b449bcb3079b1ec",
-  "notes": "掛房離桌改為 Telegram 提醒：\n(1) 被踢或跳回大廳時不再自動回桌，連續確認不在牌桌 10 秒後發 TG「已離開牌桌」提醒，請手動回桌；回到牌桌後會再通知並自動恢復跟注。\n(2) 找不到星城遊戲視窗（關閉／當機）超過 30 秒也會發 TG 提醒，找回視窗後再通知。\n(3) 更換 Telegram 通知機器人金鑰（舊版的通知已失效，更新後恢復）。"
+    "version": "1.2.52",
+    "url": "https://github.com/zhang4347/start-follow/releases/download/v1.2.52/StarFollow_1.2.52.zip",
+    "sha256": "855ea0dc895650285be0d9e53ec954c978c50369810ab95a5b86a546c028e850",
+    "notes": "v1.2.52 新增搶房模式：先進任一間房，雙擊〔搶房.bat〕輸入要搶的房號；滿房會一直點 GO，搶到發 TG，期間自動補注防踢、每小時回報；離開房間會發 TG 並暫停（不自動回房）。"
 }
